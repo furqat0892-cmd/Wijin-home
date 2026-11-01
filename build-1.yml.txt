@@ -1,0 +1,1044 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Loyiha fayllarini yaratish
+        run: |
+          mkdir -p "$(dirname '.gitignore')"
+          cat > '.gitignore' <<'QP_EOF_0'
+          .gradle/
+          build/
+          local.properties
+          .idea/
+          *.iml
+          QP_EOF_0
+          mkdir -p "$(dirname 'app/build.gradle.kts')"
+          cat > 'app/build.gradle.kts' <<'QP_EOF_1'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "uz.qoriqchi.pro"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "uz.qoriqchi.pro"
+                  minSdk = 28
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          QP_EOF_1
+          mkdir -p "$(dirname 'app/src/main/AndroidManifest.xml')"
+          cat > 'app/src/main/AndroidManifest.xml' <<'QP_EOF_2'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+              <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+              <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+              <application
+                  android:allowBackup="false"
+                  android:icon="@drawable/ic_launcher"
+                  android:label="Qo'riqchi Pro"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                      <!-- Telegram/brauzerdagi APK'ni "Ulashish" orqali tekshirish -->
+                      <intent-filter>
+                          <action android:name="android.intent.action.SEND" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:mimeType="application/vnd.android.package-archive" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.SEND" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:mimeType="application/octet-stream" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.VIEW" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                          <data android:mimeType="application/vnd.android.package-archive" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".Monitor"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="Yangi o'rnatilgan ilovalar va yuklangan APK fayllarni zararli belgilar uchun tekshirish" />
+                  </service>
+
+                  <receiver
+                      android:name=".BootReceiver"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                      </intent-filter>
+                  </receiver>
+              </application>
+          </manifest>
+          QP_EOF_2
+          mkdir -p "$(dirname 'app/src/main/java/uz/qoriqchi/pro/LinkCheck.kt')"
+          cat > 'app/src/main/java/uz/qoriqchi/pro/LinkCheck.kt' <<'QP_EOF_3'
+          package uz.qoriqchi.pro
+
+          /** Havolani ochmasdan, faqat shaklini tahlil qiladi (internet kerak emas). */
+          object LinkCheck {
+
+              private val brands = listOf(
+                  "click", "payme", "uzum", "paynet", "humocard", "uzcard", "mygov", "egov",
+                  "kapitalbank", "xalqbank", "agrobank", "asakabank", "hamkorbank",
+                  "ipotekabank", "davrbank", "anorbank", "tbcbank"
+              )
+              private val badTlds = listOf(".xyz", ".top", ".click", ".site", ".online", ".icu", ".live", ".buzz", ".cfd", ".sbs", ".vip", ".work")
+              private val shorteners = listOf("bit.ly", "tinyurl.com", "cutt.ly", "is.gd", "t.ly", "rb.gy", "shorturl.at", "clck.ru")
+
+              fun analyze(raw: String): Report {
+                  val s = raw.trim()
+                  val f = mutableListOf<Finding>()
+                  fun add(p: Int, t: String) { f += Finding(p, t) }
+
+                  val uri = try {
+                      java.net.URI(if (s.contains("://")) s else "https://$s")
+                  } catch (e: Exception) {
+                      null
+                  }
+                  val host = (uri?.host ?: "").lowercase()
+                  val path = (uri?.path ?: "").lowercase()
+
+                  if (uri == null || host.isEmpty()) add(15, "Havola noto'g'ri tuzilgan")
+                  if (s.lowercase().startsWith("http://")) add(15, "Shifrlanmagan (http) ulanish")
+                  if (Regex("^\\d{1,3}(\\.\\d{1,3}){3}$").matches(host)) add(30, "Domen o'rniga IP manzil ishlatilgan")
+                  if (host.contains("xn--")) add(30, "Boshqa alifbo belgilari bilan yashirilgan domen (punycode)")
+                  if (uri?.userInfo != null) add(30, "Havola ichida '@' bor: haqiqiy manzil yashirilgan")
+                  if (path.endsWith(".apk")) add(45, "Havola to'g'ridan-to'g'ri APK faylga olib boradi")
+                  if (shorteners.any { host == it }) add(20, "Qisqartirilgan havola: manzil yashirin")
+                  if (badTlds.any { host.endsWith(it) }) add(15, "Firibgarlikda ko'p uchraydigan domen zonasi")
+                  if (host.count { it == '.' } >= 4) add(10, "Juda ko'p subdomen")
+                  if (host.count { it == '-' } >= 3) add(10, "Domenda ko'p chiziqcha bor")
+
+                  val brand = brands.firstOrNull { host.contains(it) }
+                  if (brand != null && !host.endsWith(".uz")) {
+                      add(40, "'$brand' nomi ishlatilgan, lekin domen .uz emas: soxta sayt bo'lishi mumkin")
+                  }
+
+                  if (f.none { it.points > 0 }) add(0, "Tashqi belgilar bo'yicha shubhali narsa yo'q (bu 100% kafolat emas)")
+
+                  return Report(
+                      label = s.take(80),
+                      pkg = "Havola",
+                      score = minOf(100, f.sumOf { it.points }),
+                      findings = f
+                  )
+              }
+          }
+          QP_EOF_3
+          mkdir -p "$(dirname 'app/src/main/java/uz/qoriqchi/pro/MainActivity.kt')"
+          cat > 'app/src/main/java/uz/qoriqchi/pro/MainActivity.kt' <<'QP_EOF_4'
+          package uz.qoriqchi.pro
+
+          import android.app.Activity
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.text.InputType
+          import android.view.ViewGroup
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import android.widget.Toast
+          import java.io.File
+          import java.security.MessageDigest
+
+          class MainActivity : Activity() {
+
+              private lateinit var results: LinearLayout
+              private lateinit var status: TextView
+              private lateinit var linkInput: EditText
+              private lateinit var keyInput: EditText
+
+              private val gray = 0xFF6B7280.toInt()
+              private val ink = 0xFF1B1F23.toInt()
+              private val prefs get() = getSharedPreferences("qp", Context.MODE_PRIVATE)
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  buildUi()
+                  handleIntent(intent)
+              }
+
+              override fun onNewIntent(intent: Intent?) {
+                  super.onNewIntent(intent)
+                  handleIntent(intent)
+              }
+
+              // ---------- UI ----------
+
+              private fun text(s: String, size: Float, bold: Boolean = false, color: Int = ink) =
+                  TextView(this).apply {
+                      text = s
+                      textSize = size
+                      setTextColor(color)
+                      if (bold) setTypeface(typeface, Typeface.BOLD)
+                      setPadding(0, dp(3), 0, dp(3))
+                  }
+
+              private fun btn(label: String, onClick: () -> Unit) =
+                  Button(this).apply {
+                      text = label
+                      isAllCaps = false
+                      setOnClickListener { onClick() }
+                  }
+
+              private fun card() = LinearLayout(this).apply {
+                  orientation = LinearLayout.VERTICAL
+                  setPadding(dp(14), dp(12), dp(14), dp(12))
+                  background = GradientDrawable().apply {
+                      setColor(Color.WHITE)
+                      cornerRadius = dp(12).toFloat()
+                  }
+                  layoutParams = LinearLayout.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT,
+                      ViewGroup.LayoutParams.WRAP_CONTENT
+                  ).apply { topMargin = dp(10) }
+              }
+
+              private fun buildUi() {
+                  val root = ScrollView(this).apply { setBackgroundColor(0xFFF4F6F8.toInt()) }
+                  val col = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(28), dp(16), dp(28))
+                  }
+                  root.addView(col)
+
+                  col.addView(text("Qo'riqchi Pro", 26f, true))
+                  col.addView(
+                      text(
+                          "Zararli APK, soxta ilova va firibgar havolalarni tekshiradi. " +
+                              "Tahlil telefonning o'zida bajariladi, fayllaringiz yuborilmaydi.",
+                          14f, false, gray
+                      )
+                  )
+
+                  col.addView(btn("📱  O'rnatilgan ilovalarni tekshir") { scanInstalled() })
+                  col.addView(btn("📦  APK faylni tekshir") { pickFile() })
+                  col.addView(btn("🛡  Real vaqt himoyasini yoq / o'chir") { toggleMonitor() })
+                  col.addView(btn("📂  Yuklamalarni kuzatishga ruxsat berish") { openAllFiles() })
+
+                  linkInput = EditText(this).apply {
+                      hint = "Havolani shu yerga qo'ying"
+                      inputType = InputType.TYPE_TEXT_VARIATION_URI
+                      setSingleLine(true)
+                  }
+                  col.addView(linkInput)
+                  col.addView(btn("🔗  Havolani tekshir") { checkLink() })
+
+                  col.addView(text("VirusTotal API kaliti (ixtiyoriy)", 13f, true, gray))
+                  keyInput = EditText(this).apply {
+                      hint = "Kalit (faqat xesh yuboriladi)"
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                      setSingleLine(true)
+                      setText(prefs.getString("vt", ""))
+                  }
+                  col.addView(keyInput)
+                  col.addView(btn("Kalitni saqlash") {
+                      prefs.edit().putString("vt", keyInput.text.toString().trim()).apply()
+                      toast("Saqlandi")
+                  })
+
+                  status = text("", 14f, true)
+                  col.addView(status)
+                  results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                  col.addView(results)
+
+                  setContentView(root)
+              }
+
+              private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+              private fun showReport(r: Report, installed: Boolean) {
+                  val c = card()
+                  c.addView(text(r.label, 16f, true))
+                  c.addView(text(r.pkg, 12f, false, gray))
+                  c.addView(text("${r.level.title}  •  ${r.score}/100", 15f, true, r.level.color))
+                  r.findings.forEach {
+                      c.addView(text((if (it.points > 0) "⚠ " else "✔ ") + it.text, 13f))
+                  }
+                  r.cert?.let { c.addView(text("Imzo SHA-256: ${it.take(32)}…", 11f, false, gray)) }
+                  r.sha256?.let { c.addView(text("Fayl SHA-256: $it", 11f, false, gray)) }
+
+                  val vtView = text(r.vt?.let { "VirusTotal: $it" } ?: "", 13f, true)
+                  c.addView(vtView)
+
+                  if (installed) {
+                      val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                      fun rowBtn(label: String, action: () -> Unit) {
+                          val b = btn(label, action)
+                          b.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                          row.addView(b)
+                      }
+                      rowBtn("Sozlamalar") {
+                          startActivity(
+                              Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${r.pkg}"))
+                          )
+                      }
+                      rowBtn("O'chirish") {
+                          startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:${r.pkg}")))
+                      }
+                      rowBtn("VirusTotal") { vtForInstalled(r, vtView) }
+                      c.addView(row)
+                  }
+                  results.addView(c)
+              }
+
+              // ---------- Amallar ----------
+
+              private fun scanInstalled() {
+                  results.removeAllViews()
+                  status.text = "Tekshirilmoqda…"
+                  Thread {
+                      val list = try {
+                          Scanner.scanInstalled(this)
+                      } catch (e: Exception) {
+                          null
+                      }
+                      runOnUiThread {
+                          if (list == null) {
+                              status.text = "Ilovalar ro'yxatini olib bo'lmadi."
+                              return@runOnUiThread
+                          }
+                          val risky = list.filter { it.score >= 25 }
+                          status.text = "${list.size} ta ilova tekshirildi: ${risky.size} tasi e'tibor talab qiladi."
+                          val show = if (risky.isEmpty()) list.take(5) else risky.take(40)
+                          show.forEach { showReport(it, true) }
+                      }
+                  }.start()
+              }
+
+              private fun pickFile() {
+                  val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                      addCategory(Intent.CATEGORY_OPENABLE)
+                      type = "*/*"
+                  }
+                  startActivityForResult(i, 11)
+              }
+
+              @Suppress("DEPRECATION")
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == 11 && resultCode == RESULT_OK) {
+                      data?.data?.let { scanUri(it) }
+                  }
+              }
+
+              @Suppress("DEPRECATION")
+              private fun streamOf(i: Intent): Uri? =
+                  if (Build.VERSION.SDK_INT >= 33) i.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                  else i.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+
+              private fun handleIntent(i: Intent?) {
+                  if (i == null) return
+                  val uri: Uri? = when (i.action) {
+                      Intent.ACTION_VIEW -> i.data
+                      Intent.ACTION_SEND -> streamOf(i)
+                      else -> null
+                  }
+                  if (uri != null) {
+                      setIntent(Intent())
+                      scanUri(uri)
+                  }
+              }
+
+              private fun scanUri(uri: Uri) {
+                  results.removeAllViews()
+                  status.text = "APK tekshirilmoqda…"
+                  Thread {
+                      val tmp = File(cacheDir, "scan.apk")
+                      var rep: Report? = null
+                      var err: String? = null
+                      try {
+                          val md = MessageDigest.getInstance("SHA-256")
+                          var total = 0L
+                          val ins = contentResolver.openInputStream(uri) ?: throw Exception("fayl ochilmadi")
+                          ins.use { input ->
+                              tmp.outputStream().use { out ->
+                                  val buf = ByteArray(65536)
+                                  while (true) {
+                                      val n = input.read(buf)
+                                      if (n < 0) break
+                                      md.update(buf, 0, n)
+                                      out.write(buf, 0, n)
+                                      total += n
+                                      if (total > 400L * 1024 * 1024) throw Exception("fayl juda katta")
+                                  }
+                              }
+                          }
+                          val sha = md.digest().joinToString("") { "%02x".format(it) }
+                          rep = Scanner.scanArchive(this, tmp, sha)
+                          val cur = rep
+                          if (cur == null) {
+                              err = "Bu to'g'ri APK emas (XAPK/APKS arxiv yoki buzilgan fayl bo'lishi mumkin)."
+                          } else {
+                              val key = prefs.getString("vt", "") ?: ""
+                              if (key.isNotBlank()) rep = withVt(cur, key, sha)
+                          }
+                      } catch (e: Exception) {
+                          err = "Faylni o'qib bo'lmadi: ${e.message}"
+                      } finally {
+                          tmp.delete()
+                      }
+                      val finalRep = rep
+                      val finalErr = err
+                      runOnUiThread {
+                          if (finalRep == null) {
+                              status.text = finalErr ?: "Xatolik"
+                          } else {
+                              status.text = ""
+                              showReport(finalRep, false)
+                          }
+                      }
+                  }.start()
+              }
+
+              private fun withVt(r: Report, key: String, sha: String): Report {
+                  val (msg, mal) = VT.lookup(key, sha)
+                  val extra = when {
+                      mal >= 3 -> 60
+                      mal >= 1 -> 30
+                      else -> 0
+                  }
+                  val findings = if (extra > 0) r.findings + Finding(extra, "VirusTotal antiviruslari xavf topdi") else r.findings
+                  return r.copy(score = minOf(100, r.score + extra), findings = findings, vt = msg)
+              }
+
+              private fun vtForInstalled(r: Report, view: TextView) {
+                  val key = prefs.getString("vt", "") ?: ""
+                  val path = r.apkPath
+                  if (key.isBlank()) {
+                      toast("Avval pastda VirusTotal kalitini kiriting")
+                      return
+                  }
+                  if (path == null) {
+                      toast("Ilova fayli topilmadi")
+                      return
+                  }
+                  view.text = "VirusTotal tekshirmoqda…"
+                  Thread {
+                      val msg = try {
+                          val sha = Scanner.sha256File(File(path))
+                          VT.lookup(key, sha).first
+                      } catch (e: Exception) {
+                          "Xatolik: ${e.message}"
+                      }
+                      runOnUiThread { view.text = "VirusTotal: $msg" }
+                  }.start()
+              }
+
+              private fun toggleMonitor() {
+                  val on = !prefs.getBoolean("monitor", false)
+                  if (on && Build.VERSION.SDK_INT >= 33 &&
+                      checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                  ) {
+                      requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 12)
+                  }
+                  prefs.edit().putBoolean("monitor", on).apply()
+                  if (on) {
+                      try {
+                          startForegroundService(Intent(this, Monitor::class.java))
+                          status.text = "Real vaqt himoyasi yoqildi. Bildirishnomalarga ruxsat bering."
+                      } catch (e: Exception) {
+                          status.text = "Ishga tushmadi: ${e.message}"
+                      }
+                  } else {
+                      stopService(Intent(this, Monitor::class.java))
+                      status.text = "Real vaqt himoyasi o'chirildi."
+                  }
+              }
+
+              private fun openAllFiles() {
+                  if (Build.VERSION.SDK_INT < 30) {
+                      toast("Bu funksiya Android 11+ uchun")
+                      return
+                  }
+                  try {
+                      startActivity(
+                          Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))
+                      )
+                  } catch (e: Exception) {
+                      startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                  }
+                  toast("Ruxsat bergach, himoyani o'chirib qayta yoqing")
+              }
+
+              private fun checkLink() {
+                  val s = linkInput.text.toString().trim()
+                  if (s.isEmpty()) {
+                      toast("Havolani kiriting")
+                      return
+                  }
+                  results.removeAllViews()
+                  status.text = ""
+                  showReport(LinkCheck.analyze(s), false)
+              }
+          }
+          QP_EOF_4
+          mkdir -p "$(dirname 'app/src/main/java/uz/qoriqchi/pro/Monitor.kt')"
+          cat > 'app/src/main/java/uz/qoriqchi/pro/Monitor.kt' <<'QP_EOF_5'
+          package uz.qoriqchi.pro
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.content.pm.ServiceInfo
+          import android.os.Build
+          import android.os.Environment
+          import android.os.FileObserver
+          import android.os.IBinder
+          import java.io.File
+
+          /**
+           * Real vaqt himoyasi:
+           *  - yangi o'rnatilgan/yangilangan ilovalarni darhol tekshiradi;
+           *  - "Barcha fayllarga kirish" ruxsati berilsa, Yuklamalar va Telegram papkalariga tushgan APK'larni tekshiradi.
+           * Xavfli topilsa, o'zbekcha bildirishnoma chiqaradi.
+           */
+          class Monitor : Service() {
+
+              private val observers = mutableListOf<FileObserver>()
+              private val seen = HashSet<String>()
+
+              private val pkgReceiver = object : BroadcastReceiver() {
+                  override fun onReceive(c: Context, i: Intent) {
+                      val pkg = i.data?.schemeSpecificPart ?: return
+                      if (pkg == packageName) return
+                      Thread {
+                          val r = Scanner.scanPackage(this@Monitor, pkg)
+                          if (r != null && r.score >= 25) alert("Yangi ilova: ${r.label}", r)
+                      }.start()
+                  }
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(
+                      NotificationChannel("monitor", "Himoya holati", NotificationManager.IMPORTANCE_MIN)
+                  )
+                  nm.createNotificationChannel(
+                      NotificationChannel("alerts", "Xavf ogohlantirishlari", NotificationManager.IMPORTANCE_HIGH)
+                  )
+
+                  val open = PendingIntent.getActivity(
+                      this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+                  )
+                  val n = Notification.Builder(this, "monitor")
+                      .setSmallIcon(R.drawable.ic_launcher)
+                      .setContentTitle("Qo'riqchi Pro faol")
+                      .setContentText("Yangi ilovalar va yuklangan APK fayllar kuzatilmoqda")
+                      .setContentIntent(open)
+                      .setOngoing(true)
+                      .build()
+                  try {
+                      if (Build.VERSION.SDK_INT >= 34) {
+                          startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                      } else {
+                          startForeground(1, n)
+                      }
+                  } catch (e: Exception) {
+                      stopSelf()
+                      return
+                  }
+
+                  val filter = IntentFilter().apply {
+                      addAction(Intent.ACTION_PACKAGE_ADDED)
+                      addAction(Intent.ACTION_PACKAGE_REPLACED)
+                      addDataScheme("package")
+                  }
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      registerReceiver(pkgReceiver, filter, Context.RECEIVER_EXPORTED)
+                  } else {
+                      registerReceiver(pkgReceiver, filter)
+                  }
+                  startWatching()
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
+              override fun onDestroy() {
+                  try {
+                      unregisterReceiver(pkgReceiver)
+                  } catch (e: Exception) {
+                  }
+                  observers.forEach { it.stopWatching() }
+                  observers.clear()
+                  super.onDestroy()
+              }
+
+              @Suppress("DEPRECATION")
+              private fun startWatching() {
+                  if (Build.VERSION.SDK_INT < 30 || !Environment.isExternalStorageManager()) return
+                  val root = Environment.getExternalStorageDirectory()
+                  listOf(
+                      "Download",
+                      "Download/Telegram",
+                      "Documents",
+                      "Android/media/org.telegram.messenger/Telegram/Telegram Documents"
+                  ).map { File(root, it) }
+                      .filter { it.isDirectory }
+                      .forEach { dir ->
+                          val o = object : FileObserver(dir.absolutePath, FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO) {
+                              override fun onEvent(event: Int, path: String?) {
+                                  if (path != null && path.lowercase().endsWith(".apk")) scanFile(File(dir, path))
+                              }
+                          }
+                          o.startWatching()
+                          observers += o
+                      }
+              }
+
+              private fun scanFile(file: File) {
+                  Thread {
+                      try {
+                          if (!seen.add(file.absolutePath + ":" + file.length())) return@Thread
+                          Thread.sleep(500)
+                          val sha = Scanner.sha256File(file)
+                          val r = Scanner.scanArchive(this, file, sha) ?: return@Thread
+                          if (r.score >= 25) alert("Yuklangan APK: ${r.label}", r)
+                      } catch (e: Exception) {
+                      }
+                  }.start()
+              }
+
+              private fun alert(title: String, r: Report) {
+                  val open = PendingIntent.getActivity(
+                      this, r.pkg.hashCode(), Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+                  )
+                  val bad = r.findings.filter { it.points > 0 }
+                  val n = Notification.Builder(this, "alerts")
+                      .setSmallIcon(R.drawable.ic_launcher)
+                      .setContentTitle("$title: ${r.level.title} (${r.score}/100)")
+                      .setContentText(bad.firstOrNull()?.text ?: "")
+                      .setStyle(Notification.BigTextStyle().bigText(bad.take(3).joinToString("\n") { "• " + it.text }))
+                      .setContentIntent(open)
+                      .setAutoCancel(true)
+                      .build()
+                  getSystemService(NotificationManager::class.java).notify(r.pkg.hashCode(), n)
+              }
+          }
+
+          /** Telefon qayta yoqilganda himoya yoqilgan bo'lsa, xizmatni qayta ishga tushiradi. */
+          class BootReceiver : BroadcastReceiver() {
+              override fun onReceive(c: Context, i: Intent) {
+                  if (c.getSharedPreferences("qp", Context.MODE_PRIVATE).getBoolean("monitor", false)) {
+                      try {
+                          c.startForegroundService(Intent(c, Monitor::class.java))
+                      } catch (e: Exception) {
+                      }
+                  }
+              }
+          }
+          QP_EOF_5
+          mkdir -p "$(dirname 'app/src/main/java/uz/qoriqchi/pro/Scanner.kt')"
+          cat > 'app/src/main/java/uz/qoriqchi/pro/Scanner.kt' <<'QP_EOF_6'
+          package uz.qoriqchi.pro
+
+          import android.content.Context
+          import android.content.pm.ApplicationInfo
+          import android.content.pm.PackageInfo
+          import android.content.pm.PackageManager
+          import android.os.Build
+          import java.io.File
+          import java.security.MessageDigest
+
+          data class Finding(val points: Int, val text: String)
+
+          enum class Level(val title: String, val color: Int) {
+              LOW("Xavfsiz", 0xFF2E7D32.toInt()),
+              MEDIUM("Ehtiyot bo'ling", 0xFFF9A825.toInt()),
+              HIGH("Xavfli", 0xFFEF6C00.toInt()),
+              CRITICAL("Juda xavfli", 0xFFC62828.toInt())
+          }
+
+          data class Report(
+              val label: String,
+              val pkg: String,
+              val score: Int,
+              val findings: List<Finding>,
+              val sha256: String? = null,
+              val cert: String? = null,
+              val apkPath: String? = null,
+              val vt: String? = null
+          ) {
+              val level: Level
+                  get() = when {
+                      score >= 75 -> Level.CRITICAL
+                      score >= 50 -> Level.HIGH
+                      score >= 25 -> Level.MEDIUM
+                      else -> Level.LOW
+                  }
+          }
+
+          object Scanner {
+
+              @Suppress("DEPRECATION")
+              private const val FLAGS =
+                  PackageManager.GET_PERMISSIONS or
+                      PackageManager.GET_SERVICES or
+                      PackageManager.GET_RECEIVERS or
+                      PackageManager.GET_SIGNING_CERTIFICATES
+
+              private val trustedStores = setOf(
+                  "com.android.vending",
+                  "com.sec.android.app.samsungapps",
+                  "com.huawei.appmarket",
+                  "com.xiaomi.mipicks",
+                  "com.heytap.market",
+                  "com.amazon.venezia",
+                  "org.fdroid.fdroid"
+              )
+
+              private val sideloadInstallers = setOf(
+                  "com.google.android.packageinstaller",
+                  "com.android.packageinstaller",
+                  "com.miui.packageinstaller",
+                  "com.samsung.android.packageinstaller"
+              )
+
+              private val knownNames = mapOf(
+                  "telegram" to "org.telegram",
+                  "whatsapp" to "com.whatsapp",
+                  "google play" to "com.android.vending",
+                  "play market" to "com.android.vending",
+                  "chrome" to "com.android.chrome",
+                  "youtube" to "com.google.android.youtube",
+                  "instagram" to "com.instagram",
+                  "facebook" to "com.facebook"
+              )
+
+              private val systemWords = listOf("google", "android system", "system update", "security", "tizim", "yangilanish")
+
+              private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
+
+              fun sha256File(f: File): String {
+                  val md = MessageDigest.getInstance("SHA-256")
+                  f.inputStream().use { s ->
+                      val buf = ByteArray(65536)
+                      while (true) {
+                          val n = s.read(buf)
+                          if (n < 0) break
+                          md.update(buf, 0, n)
+                      }
+                  }
+                  return hex(md.digest())
+              }
+
+              private fun certs(info: PackageInfo): Set<String> {
+                  val si = info.signingInfo ?: return emptySet()
+                  val arr = if (si.hasMultipleSigners()) si.apkContentsSigners else si.signingCertificateHistory
+                  return arr.map { hex(MessageDigest.getInstance("SHA-256").digest(it.toByteArray())) }.toSet()
+              }
+
+              private fun isSystem(info: PackageInfo): Boolean {
+                  val fl = info.applicationInfo?.flags ?: 0
+                  return (fl and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0
+              }
+
+              @Suppress("DEPRECATION")
+              fun scanInstalled(ctx: Context): List<Report> {
+                  val pm = ctx.packageManager
+                  return pm.getInstalledPackages(FLAGS)
+                      .filter { !isSystem(it) && it.packageName != ctx.packageName }
+                      .map { analyze(ctx, it, it.applicationInfo?.loadLabel(pm)?.toString() ?: it.packageName, false, null) }
+                      .sortedByDescending { it.score }
+              }
+
+              @Suppress("DEPRECATION")
+              fun scanPackage(ctx: Context, pkg: String): Report? {
+                  val pm = ctx.packageManager
+                  val info = try {
+                      pm.getPackageInfo(pkg, FLAGS)
+                  } catch (e: Exception) {
+                      return null
+                  }
+                  if (isSystem(info)) return null
+                  return analyze(ctx, info, info.applicationInfo?.loadLabel(pm)?.toString() ?: pkg, false, null)
+              }
+
+              @Suppress("DEPRECATION")
+              fun scanArchive(ctx: Context, file: File, sha: String): Report? {
+                  val pm = ctx.packageManager
+                  val info = pm.getPackageArchiveInfo(file.absolutePath, FLAGS) ?: return null
+                  val ai = info.applicationInfo
+                  ai?.sourceDir = file.absolutePath
+                  ai?.publicSourceDir = file.absolutePath
+                  val label = try {
+                      ai?.loadLabel(pm)?.toString() ?: info.packageName
+                  } catch (e: Exception) {
+                      info.packageName
+                  }
+                  return analyze(ctx, info, label, true, sha)
+              }
+
+              @Suppress("DEPRECATION")
+              fun analyze(ctx: Context, info: PackageInfo, label: String, fromFile: Boolean, fileSha: String?): Report {
+                  val pm = ctx.packageManager
+                  val pkg = info.packageName
+                  val f = mutableListOf<Finding>()
+                  fun add(p: Int, t: String) { f += Finding(p, t) }
+
+                  val perms = (info.requestedPermissions ?: emptyArray())
+                      .filter { it.startsWith("android.permission.") }
+                      .map { it.removePrefix("android.permission.") }
+                      .toSet()
+
+                  val a11y = info.services?.any { it.permission == "android.permission.BIND_ACCESSIBILITY_SERVICE" } == true
+                  val admin = info.receivers?.any { it.permission == "android.permission.BIND_DEVICE_ADMIN" } == true
+                  val notif = info.services?.any { it.permission == "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" } == true
+                  val readSms = "READ_SMS" in perms || "RECEIVE_SMS" in perms
+                  val sendSms = "SEND_SMS" in perms
+                  val overlay = "SYSTEM_ALERT_WINDOW" in perms
+
+                  if (a11y) add(35, "Maxsus imkoniyatlar (Accessibility) xizmati bor: ekranni o'qiy va o'zi bosa oladi")
+                  if (admin) add(25, "Qurilma administratori bo'lishni so'raydi: o'chirib tashlash qiyinlashadi")
+                  if (notif) add(20, "Bildirishnomalarni o'qiydi (tasdiq kodlarini ushlashi mumkin)")
+                  if (readSms) add(25, "SMS'larni o'qiydi (bank tasdiq kodlari xavf ostida)")
+                  if (sendSms) add(15, "Sizning nomingizdan SMS yubora oladi")
+                  if (overlay) add(15, "Boshqa ilovalar ustidan oyna chiza oladi (soxta kirish oynasi uchun ishlatiladi)")
+                  if ("REQUEST_INSTALL_PACKAGES" in perms) add(10, "Boshqa APK'larni o'rnatishni so'raydi")
+                  if ("MANAGE_EXTERNAL_STORAGE" in perms) add(6, "Barcha fayllarga kirish so'raydi")
+
+                  val privacy = listOf("READ_CALL_LOG", "PROCESS_OUTGOING_CALLS", "RECORD_AUDIO", "READ_CONTACTS").filter { it in perms }
+                  if (privacy.isNotEmpty()) {
+                      add(minOf(12, 4 * privacy.size), "Shaxsiy ma'lumotlarga kirish: ${privacy.joinToString(", ")}")
+                  }
+
+                  if (a11y && (readSms || overlay)) {
+                      add(20, "Bank troyanlariga xos kombinatsiya: Accessibility + SMS/oyna ustidan chizish")
+                  }
+
+                  val system = !fromFile && isSystem(info)
+                  val lower = label.lowercase().trim()
+
+                  if (!system) {
+                      for ((name, prefix) in knownNames) {
+                          if (lower == name && !pkg.startsWith(prefix)) {
+                              add(30, "Nomi \"$label\" ga o'xshash, lekin paket nomi rasmiy emas ($pkg)")
+                          }
+                      }
+                      if (systemWords.any { lower.contains(it) }) {
+                          add(12, "Tizim ilovasiga o'xshash nom bilan yashirinayotgan bo'lishi mumkin")
+                      }
+                  }
+
+                  if (!fromFile) {
+                      val installer: String? = try {
+                          if (Build.VERSION.SDK_INT >= 30) pm.getInstallSourceInfo(pkg).installingPackageName
+                          else pm.getInstallerPackageName(pkg)
+                      } catch (e: Exception) {
+                          null
+                      }
+                      when {
+                          installer != null && installer in trustedStores ->
+                              add(0, "Rasmiy do'kondan o'rnatilgan ($installer)")
+                          installer == null ->
+                              add(10, "O'rnatish manbasi noma'lum (do'kondan emas)")
+                          installer in sideloadInstallers ->
+                              add(12, "APK fayldan qo'lda o'rnatilgan")
+                          else ->
+                              add(12, "Do'kondan tashqari manba orqali o'rnatilgan: $installer")
+                      }
+                      if (pm.getLaunchIntentForPackage(pkg) == null && (a11y || admin || readSms || notif)) {
+                          add(15, "Ikonkasi yo'q: yashirin ishlaydi")
+                      }
+                  } else {
+                      try {
+                          val installed = pm.getPackageInfo(pkg, PackageManager.GET_SIGNING_CERTIFICATES)
+                          val a = certs(info)
+                          val b = certs(installed)
+                          if (a.isNotEmpty() && b.isNotEmpty() && a.intersect(b).isEmpty()) {
+                              add(50, "DIQQAT: telefonda shu paket nomli ilova bor, lekin imzosi BOSHQA. Bu soxta nusxa yoki \"yangilanish\" niqobi bo'lishi mumkin")
+                          } else {
+                              add(0, "Telefondagi shu ilova bilan imzosi mos")
+                          }
+                      } catch (e: PackageManager.NameNotFoundException) {
+                          add(0, "Bu ilova hali telefonda o'rnatilmagan")
+                      }
+                  }
+
+                  if (f.none { it.points > 0 }) add(0, "Xavfli belgilar topilmadi")
+
+                  val score = minOf(100, f.sumOf { it.points })
+                  return Report(
+                      label = label,
+                      pkg = pkg,
+                      score = score,
+                      findings = f,
+                      sha256 = fileSha,
+                      cert = certs(info).firstOrNull(),
+                      apkPath = info.applicationInfo?.sourceDir
+                  )
+              }
+          }
+          QP_EOF_6
+          mkdir -p "$(dirname 'app/src/main/java/uz/qoriqchi/pro/VT.kt')"
+          cat > 'app/src/main/java/uz/qoriqchi/pro/VT.kt' <<'QP_EOF_7'
+          package uz.qoriqchi.pro
+
+          import java.net.HttpURLConnection
+          import java.net.URL
+
+          /** VirusTotal'ga faqat fayl SHA-256 xeshi yuboriladi, faylning o'zi emas. Fon oqimida chaqiring. */
+          object VT {
+
+              /** (xabar, xavfli deb topgan antiviruslar soni) */
+              fun lookup(key: String, sha256: String): Pair<String, Int> {
+                  val c = URL("https://www.virustotal.com/api/v3/files/$sha256").openConnection() as HttpURLConnection
+                  return try {
+                      c.setRequestProperty("x-apikey", key)
+                      c.connectTimeout = 10000
+                      c.readTimeout = 15000
+                      when (c.responseCode) {
+                          200 -> {
+                              val body = c.inputStream.bufferedReader().readText()
+                              val st = org.json.JSONObject(body)
+                                  .getJSONObject("data")
+                                  .getJSONObject("attributes")
+                                  .getJSONObject("last_analysis_stats")
+                              val mal = st.optInt("malicious")
+                              val sus = st.optInt("suspicious")
+                              val ok = st.optInt("harmless") + st.optInt("undetected")
+                              Pair("$mal ta antivirus xavfli, $sus ta shubhali deb topdi ($ok ta toza)", mal)
+                          }
+                          404 -> Pair("Bazada topilmadi (yangi yoki noyob fayl, ehtiyot bo'ling)", 0)
+                          401, 403 -> Pair("API kaliti noto'g'ri", 0)
+                          429 -> Pair("So'rovlar limiti tugadi, keyinroq urinib ko'ring", 0)
+                          else -> Pair("Xatolik: ${c.responseCode}", 0)
+                      }
+                  } catch (e: Exception) {
+                      Pair("Internetga ulanib bo'lmadi", 0)
+                  } finally {
+                      c.disconnect()
+                  }
+              }
+          }
+          QP_EOF_7
+          mkdir -p "$(dirname 'app/src/main/res/drawable/ic_launcher.xml')"
+          cat > 'app/src/main/res/drawable/ic_launcher.xml' <<'QP_EOF_8'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="96dp"
+              android:height="96dp"
+              android:viewportWidth="24"
+              android:viewportHeight="24">
+              <path
+                  android:fillColor="#1565C0"
+                  android:pathData="M12,2L4,5v6c0,5.5 3.8,10.7 8,12 4.2,-1.3 8,-6.5 8,-12V5L12,2z" />
+              <path
+                  android:fillColor="#FFFFFF"
+                  android:pathData="M10.5,15.5l-3,-3 1.4,-1.4 1.6,1.6 4.6,-4.6 1.4,1.4z" />
+          </vector>
+          QP_EOF_8
+          mkdir -p "$(dirname 'build.gradle.kts')"
+          cat > 'build.gradle.kts' <<'QP_EOF_9'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          QP_EOF_9
+          mkdir -p "$(dirname 'gradle.properties')"
+          cat > 'gradle.properties' <<'QP_EOF_10'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.nonTransitiveRClass=true
+          kotlin.code.style=official
+          QP_EOF_10
+          mkdir -p "$(dirname 'settings.gradle.kts')"
+          cat > 'settings.gradle.kts' <<'QP_EOF_11'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "QoriqchiPro"
+          include(":app")
+          QP_EOF_11
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: QoriqchiPro-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
