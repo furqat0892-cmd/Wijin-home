@@ -22,6 +22,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -73,8 +74,49 @@ class MainActivity : Activity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
+    private fun showCrash(err: String) {
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(24), dp(16), dp(24))
+        }
+        col.addView(TextView(this).apply {
+            text = "Oldingi ishga tushirishda xato bo'lgan. Shu matnni yuboring:"
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        col.addView(TextView(this).apply {
+            text = err
+            textSize = 10f
+            setTextIsSelectable(true)
+        })
+        col.addView(Button(this).apply {
+            text = "Ulashish"
+            setOnClickListener {
+                val i = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_TEXT, err)
+                }
+                startActivity(Intent.createChooser(i, "Xato matnini ulashish"))
+            }
+        })
+        col.addView(Button(this).apply {
+            text = "Tozalash va qayta ochish"
+            setOnClickListener {
+                CrashLog.clear(this@MainActivity)
+                recreate()
+            }
+        })
+        setContentView(ScrollView(this).apply { addView(col) })
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashLog.install(this)
+        val lastErr = CrashLog.read(this)
+        if (lastErr != null) {
+            showCrash(lastErr)
+            return
+        }
         val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
             Configuration.UI_MODE_NIGHT_YES
         pal = Pal(night)

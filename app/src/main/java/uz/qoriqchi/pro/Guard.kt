@@ -238,6 +238,7 @@ class GuardService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashLog.install(this)
         Notifier.channels(this)
         val n = Notifier.guardNotification(this)
         if (Build.VERSION.SDK_INT >= 34) {
