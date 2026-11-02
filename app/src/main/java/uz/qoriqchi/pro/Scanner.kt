@@ -122,6 +122,49 @@ object Scanner {
             .sortedByDescending { it.score }
     }
 
+    val auditGroups: Map<String, List<String>> = linkedMapOf(
+        "📷 Kamera" to listOf("android.permission.CAMERA"),
+        "🎤 Mikrofon" to listOf("android.permission.RECORD_AUDIO"),
+        "📍 Joylashuv" to listOf(
+            "android.permission.ACCESS_FINE_LOCATION",
+            "android.permission.ACCESS_COARSE_LOCATION"
+        ),
+        "✉ SMS" to listOf(
+            "android.permission.READ_SMS",
+            "android.permission.RECEIVE_SMS",
+            "android.permission.SEND_SMS"
+        ),
+        "👥 Kontaktlar" to listOf("android.permission.READ_CONTACTS"),
+        "📞 Qo'ng'iroqlar" to listOf(
+            "android.permission.READ_CALL_LOG",
+            "android.permission.PROCESS_OUTGOING_CALLS"
+        )
+    )
+
+    /** Har bir sezgir ruxsat bo'yicha: shu ruxsat HOZIR berilgan ilovalar (nomi, paketi). */
+    @Suppress("DEPRECATION")
+    fun permissionAudit(ctx: Context): Map<String, List<Pair<String, String>>> {
+        val pm = ctx.packageManager
+        val res = LinkedHashMap<String, MutableList<Pair<String, String>>>()
+        for (k in auditGroups.keys) res[k] = ArrayList()
+        for (info in pm.getInstalledPackages(PackageManager.GET_PERMISSIONS)) {
+            if (isSystem(info) || info.packageName == ctx.packageName) continue
+            val req = info.requestedPermissions ?: continue
+            val flags = info.requestedPermissionsFlags ?: continue
+            val granted = HashSet<String>()
+            for (i in req.indices) {
+                if (i < flags.size && (flags[i] and PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0) {
+                    granted.add(req[i])
+                }
+            }
+            val label = info.applicationInfo?.loadLabel(pm)?.toString() ?: info.packageName
+            for ((g, perms) in auditGroups) {
+                if (perms.any { it in granted }) res[g]?.add(Pair(label, info.packageName))
+            }
+        }
+        return res.mapValues { e -> e.value.sortedBy { it.first.lowercase() } }
+    }
+
     @Suppress("DEPRECATION")
     fun analyzePackage(ctx: Context, pkg: String): Report? {
         val pm = ctx.packageManager

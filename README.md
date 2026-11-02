@@ -23,6 +23,11 @@ Android uchun mustaqil xavfsizlik ilovasi (Kotlin, tashqi kutubxonasiz). Tahlil 
 - **Havola**: nusxalangan havola ilova ochilganda avtomatik tekshiriladi; boshqa ilovadan matnni "Ulashish → Qo'riqchi Pro" qilib ham tekshirish mumkin.
 - **Hisobotni ulashish** va **ilovani qulflash** (telefon ekran qulfi bilan).
 
+## v4 qo'shimchalari
+- **Kunlik avtomatik tekshiruv**: himoya yoqilgan bo'lsa, har 24 soatda barcha ilovalar tekshiriladi, yangi xavf topilsa bildirishnoma keladi.
+- **Ruxsatlar auditi**: kamera, mikrofon, joylashuv, SMS, kontaktlar va qo'ng'iroqlar ruxsati berilgan ilovalar ro'yxati, ruxsatni o'zgartirish tugmasi bilan.
+- **Holat kartochkasi**: bosh ekranda oxirgi tekshiruv natijasi.
+
 ## APK olish
 **Telefonning o'zidan (kompyutersiz):**
 1. github.com'da bepul hisob oching va yangi repozitoriy yarating.

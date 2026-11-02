@@ -64,6 +64,8 @@ class MainActivity : Activity() {
     private lateinit var permBox: LinearLayout
     private lateinit var clipBox: LinearLayout
     private lateinit var lockSwitch: Switch
+    private lateinit var summaryBox: LinearLayout
+    private var audit: Map<String, List<Pair<String, String>>>? = null
     private var updating = false
     private var started = false
     private var pendingIntent: Intent? = null
@@ -159,6 +161,8 @@ class MainActivity : Activity() {
         handleIntent(pendingIntent)
         pendingIntent = null
         if (prefs.getBoolean("guard", false)) startGuard()
+        if (prefs.getBoolean("guard", false)) DailyScanService.schedule(this)
+        refreshSummary()
         refreshGuardUi()
         refreshEvents()
         checkClipboard()
@@ -167,6 +171,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (started) {
+            refreshSummary()
             refreshGuardUi()
             refreshEvents()
         }
@@ -290,6 +295,9 @@ class MainActivity : Activity() {
         head.addView(titles)
         col.addView(head)
 
+        summaryBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(summaryBox)
+
         // Real vaqt himoyasi kartochkasi
         guardCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -334,6 +342,20 @@ class MainActivity : Activity() {
 
         clipBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(clipBox)
+
+        // Ruxsatlar auditi
+        val auditCard = card()
+        auditCard.addView(tv("🔍  Ruxsatlar auditi", 16f, true))
+        auditCard.addView(tv("Qaysi ilova kamera, mikrofon, joylashuv va boshqalarga kira olishini ko'ring.", 12f, false, pal.sub))
+        for (chunk in Scanner.auditGroups.keys.toList().chunked(3)) {
+            val r = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = lp(8)
+            }
+            for (n in chunk) r.addView(smallBtn(n) { showAudit(n) })
+            auditCard.addView(r)
+        }
+        col.addView(auditCard)
 
         // Havola
         val linkCard = card()
@@ -440,8 +462,10 @@ class MainActivity : Activity() {
                 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 21)
             }
             startGuard()
+            DailyScanService.schedule(this)
         } else {
             stopService(Intent(this, GuardService::class.java))
+            DailyScanService.cancel(this)
         }
         refreshGuardUi()
     }
@@ -503,6 +527,80 @@ class MainActivity : Activity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         refreshGuardUi()
+    }
+
+    private fun refreshSummary() {
+        summaryBox.removeAllViews()
+        val last = prefs.getLong("lastScan", 0L)
+        val c = card(14)
+        if (last == 0L) {
+            c.addView(tv("Telefoningiz hali tekshirilmagan", 16f, true))
+            c.addView(tv("Bir bosishda barcha o'rnatilgan ilovalarni tekshiring.", 12f, false, pal.sub))
+            c.addView(button("Hozir tekshirish", pal.accent) { scanInstalled() })
+        } else {
+            val risky = prefs.getInt("lastRisky", 0)
+            val total = prefs.getInt("lastTotal", 0)
+            val tone = when {
+                risky == 0 -> pal.good
+                risky <= 3 -> pal.warn
+                else -> pal.bad
+            }
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val big = tv("$risky", 40f, true, tone)
+            big.setPadding(0, 0, dp(16), 0)
+            val info = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+                addView(tv(if (risky == 0) "Hammasi joyida" else "ta ilova e'tibor talab qiladi", 16f, true))
+                val fmt = SimpleDateFormat("dd.MM  HH:mm", Locale.getDefault())
+                addView(tv("Oxirgi tekshiruv: ${fmt.format(Date(last))}  •  $total ta ilova", 12f, false, pal.sub))
+            }
+            row.addView(big)
+            row.addView(info)
+            c.addView(row)
+        }
+        summaryBox.addView(c)
+    }
+
+    private fun showAudit(group: String) {
+        results.removeAllViews()
+        status.text = "Ruxsatlar tekshirilmoqda…"
+        status.setTextColor(pal.ink)
+        Thread {
+            val a = audit ?: try {
+                Scanner.permissionAudit(this)
+            } catch (e: Exception) {
+                null
+            }
+            if (a != null) audit = a
+            runOnUiThread {
+                if (a == null) {
+                    status.text = "Ruxsatlarni o'qib bo'lmadi."
+                    return@runOnUiThread
+                }
+                val list = a[group] ?: emptyList()
+                status.text = "$group ruxsati berilgan ilovalar: ${list.size} ta"
+                for ((label, pkg) in list) {
+                    val c = card(8)
+                    c.addView(tv(label, 15f, true))
+                    c.addView(tv(pkg, 11f, false, pal.sub))
+                    val row = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        layoutParams = lp(6)
+                    }
+                    row.addView(smallBtn("Ruxsatni o'zgartirish") {
+                        startActivity(
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg"))
+                        )
+                    })
+                    c.addView(row)
+                    results.addView(c)
+                }
+            }
+        }.start()
     }
 
     private fun refreshEvents() {
@@ -681,7 +779,9 @@ class MainActivity : Activity() {
             row.addView(smallBtn("Ulashish") { share(r) })
             c.addView(row)
         }
+        wrap.alpha = 0f
         results.addView(wrap, index)
+        wrap.animate().alpha(1f).setDuration(250).start()
         return wrap
     }
 
@@ -704,6 +804,12 @@ class MainActivity : Activity() {
                     return@runOnUiThread
                 }
                 val risky = list.filter { it.score >= 25 }
+                prefs.edit()
+                    .putLong("lastScan", System.currentTimeMillis())
+                    .putInt("lastTotal", list.size)
+                    .putInt("lastRisky", risky.size)
+                    .apply()
+                refreshSummary()
                 status.text = "${list.size} ta ilova tekshirildi: ${risky.size} tasi e'tibor talab qiladi."
                 val show = if (risky.isEmpty()) list.take(5) else risky.take(40)
                 show.forEach { showReport(it, true) }
