@@ -73,6 +73,18 @@ object Scanner {
         "facebook" to "com.facebook"
     )
 
+    /** Taqlid qilinadigan brendlar (nomi shu so'zni o'z ichiga olib, do'kondan emas bo'lsa shubhali). */
+    private val brandWords = listOf(
+        "click", "payme", "uzum", "humo", "uzcard", "myid", "my id", "soliq", "mygov", "my.gov",
+        "egov", "telegram", "whatsapp", "google play", "instagram", "facebook", "davlat xizmat"
+    )
+
+    /** Aldov/yangilanish niqobidagi ilovalar uchun xos so'zlar. */
+    private val lureWords = listOf(
+        "aksiya", "sovg'a", "sovga", "bonus", "lotereya", "yutuq", "kredit", "pul ", "bepul",
+        "yangilanish", "update", "obnovlenie", "подарок", "акция", "бонус", "выигрыш", "кредит"
+    )
+
     private val systemWords = listOf("google", "android system", "system update", "security", "tizim", "yangilanish")
 
     private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
@@ -108,6 +120,18 @@ object Scanner {
             .filter { !isSystem(it) && it.packageName != ctx.packageName }
             .map { analyze(ctx, it, it.applicationInfo?.loadLabel(pm)?.toString() ?: it.packageName, false, null) }
             .sortedByDescending { it.score }
+    }
+
+    @Suppress("DEPRECATION")
+    fun analyzePackage(ctx: Context, pkg: String): Report? {
+        val pm = ctx.packageManager
+        val info = try {
+            pm.getPackageInfo(pkg, FLAGS)
+        } catch (e: Exception) {
+            return null
+        }
+        val label = info.applicationInfo?.loadLabel(pm)?.toString() ?: pkg
+        return analyze(ctx, info, label, false, null)
     }
 
     @Suppress("DEPRECATION")
@@ -176,6 +200,8 @@ object Scanner {
             }
         }
 
+        var fromStore = false
+        var sideloaded = fromFile
         if (!fromFile) {
             val installer: String? = try {
                 if (Build.VERSION.SDK_INT >= 30) pm.getInstallSourceInfo(pkg).installingPackageName
@@ -184,14 +210,22 @@ object Scanner {
                 null
             }
             when {
-                installer != null && installer in trustedStores ->
+                installer != null && installer in trustedStores -> {
+                    fromStore = true
                     add(0, "Rasmiy do'kondan o'rnatilgan ($installer)")
-                installer == null ->
+                }
+                installer == null -> {
+                    sideloaded = true
                     add(10, "O'rnatish manbasi noma'lum (do'kondan emas)")
-                installer in sideloadInstallers ->
+                }
+                installer in sideloadInstallers -> {
+                    sideloaded = true
                     add(12, "APK fayldan qo'lda o'rnatilgan")
-                else ->
+                }
+                else -> {
+                    sideloaded = true
                     add(12, "Do'kondan tashqari manba orqali o'rnatilgan: $installer")
+                }
             }
             if (pm.getLaunchIntentForPackage(pkg) == null && (a11y || admin || readSms || notif)) {
                 add(15, "Ikonkasi yo'q: yashirin ishlaydi")
@@ -211,9 +245,24 @@ object Scanner {
             }
         }
 
+        if (sideloaded && !system) {
+            val brand = brandWords.firstOrNull { lower.contains(it) }
+            if (brand != null && knownNames.none { (n, pre) -> lower == n && pkg.startsWith(pre) }) {
+                add(25, "Rasmiy do'kondan emas, lekin \"$brand\" nomini ishlatmoqda: soxta nusxa bo'lishi mumkin")
+            }
+            if (lureWords.any { lower.contains(it) }) {
+                add(15, "Nomi aldov/yangilanish niqobida (\"$label\")")
+            }
+        }
+
         if (f.none { it.points > 0 }) add(0, "Xavfli belgilar topilmadi")
 
-        val score = minOf(100, f.sumOf { it.points })
+        var raw = f.sumOf { it.points }
+        if (fromStore && raw > 0) {
+            raw /= 2
+            add(0, "Rasmiy do'kondan o'rnatilgani uchun xavf bali ikki baravar kamaytirildi")
+        }
+        val score = minOf(100, raw)
         return Report(
             label = label,
             pkg = pkg,
