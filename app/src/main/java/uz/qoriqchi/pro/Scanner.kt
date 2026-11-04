@@ -25,7 +25,8 @@ data class Report(
     val sha256: String? = null,
     val cert: String? = null,
     val apkPath: String? = null,
-    val vt: String? = null
+    val vt: String? = null,
+    val source: String? = null
 ) {
     val level: Level
         get() = when {

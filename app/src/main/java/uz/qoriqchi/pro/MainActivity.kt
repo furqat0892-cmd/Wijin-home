@@ -652,8 +652,12 @@ class MainActivity : Activity() {
     private fun shareText(r: Report): String {
         val sb = StringBuilder()
         sb.append("Qo'riqchi Pro hisoboti\n")
+        sb.append("Sana: ")
+            .append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date()))
+            .append('\n')
         sb.append("${r.label} (${r.pkg})\n")
         sb.append("${r.level.title}: ${r.score}/100\n")
+        r.source?.let { sb.append("Manba: ").append(it).append('\n') }
         r.findings.forEach { sb.append(if (it.points > 0) "⚠ " else "✔ ").append(it.text).append('\n') }
         r.sha256?.let { sb.append("SHA-256: ").append(it).append('\n') }
         r.vt?.let { sb.append("VirusTotal: ").append(it).append('\n') }
@@ -892,7 +896,22 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Fayl qaysi ilovadan kelganini Uri egasidan (authority) aniqlaydi. Yuboruvchi shaxsni Android bermaydi. */
+    private fun sourceOf(uri: Uri): String {
+        val a = (uri.authority ?: "").lowercase()
+        return when {
+            a.contains("telegram") -> "Telegram"
+            a.contains("whatsapp") -> "WhatsApp"
+            a.contains("chrome") || a.contains("browser") -> "Brauzer"
+            a.contains("downloads") -> "Yuklamalar (brauzer yoki boshqa ilovadan yuklangan)"
+            a.contains("documentsui") || a.contains("externalstorage") -> "Telefon xotirasidan qo'lda tanlandi"
+            a.isEmpty() -> "Noma'lum"
+            else -> a
+        }
+    }
+
     private fun scanUri(uri: Uri) {
+        val src = sourceOf(uri)
         results.removeAllViews()
         status.text = "APK tekshirilmoqda…"
         status.setTextColor(pal.ink)
@@ -923,7 +942,14 @@ class MainActivity : Activity() {
                 if (cur == null) {
                     err = "Bu to'g'ri APK emas (XAPK/APKS arxiv yoki buzilgan fayl bo'lishi mumkin)."
                 } else {
-                    val deep = DeepScan.apply(cur, tmp.absolutePath)
+                    val deep0 = DeepScan.apply(cur, tmp.absolutePath)
+                    val senderNote = if (src == "Telegram" || src == "WhatsApp") {
+                        listOf(Finding(0, "Yuboruvchi kimligini Android ilovaga bermaydi. Chatni ochib, yuboruvchi profili (nomi, raqami) va xabarni skrinshot qilib saqlang"))
+                    } else emptyList()
+                    val deep = deep0.copy(
+                        source = src,
+                        findings = listOf(Finding(0, "Fayl manbasi: $src")) + senderNote + deep0.findings
+                    )
                     rep = deep
                     val key = prefs.getString("vt", "") ?: ""
                     if (key.isNotBlank()) rep = applyVt(deep, key, sha)
