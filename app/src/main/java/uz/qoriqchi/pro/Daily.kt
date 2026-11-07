@@ -69,6 +69,8 @@ class DailyScanService : JobService() {
                 .putLong("lastScan", System.currentTimeMillis())
                 .putInt("lastTotal", list.size)
                 .putInt("lastRisky", risky.size)
+                .putInt("lastDanger", list.count { it.score >= 50 })
+                .putInt("lastSusp", list.count { it.score in 25..49 })
                 .apply()
             Store.add(c, "Kunlik tekshiruv", "${list.size} ta ilova: ${risky.size} tasi e'tibor talab qiladi", 0)
         }

@@ -9,7 +9,10 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -49,6 +52,44 @@ class MainActivity : Activity() {
         val good = 0xFF16A34A.toInt()
         val warn = 0xFFF59E0B.toInt()
         val bad = 0xFFDC2626.toInt()
+    }
+
+    /** Xavfsizlik halqasi: markazda foiz, atrofida ravon yoy. */
+    private class ScoreRing(
+        ctx: Context,
+        private val ratio: Float,
+        private val color: Int,
+        private val track: Int,
+        private val label: String,
+        private val labelColor: Int
+    ) : View(ctx) {
+        private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+        }
+        private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val side = minOf(w, h)
+            val stroke = side * 0.085f
+            arc.strokeWidth = stroke
+            val left = (w - side) / 2f + stroke
+            val top = (h - side) / 2f + stroke
+            val box = RectF(left, top, left + side - 2 * stroke, top + side - 2 * stroke)
+            arc.color = track
+            canvas.drawArc(box, 0f, 360f, false, arc)
+            arc.color = color
+            val sweep = 360f * ratio.coerceIn(0f, 1f)
+            if (sweep > 0f) canvas.drawArc(box, -90f, sweep, false, arc)
+            txt.color = labelColor
+            txt.textSize = side * 0.25f
+            canvas.drawText(label, w / 2f, h / 2f + txt.textSize * 0.35f, txt)
+        }
     }
 
     private lateinit var pal: Pal
@@ -371,7 +412,7 @@ class MainActivity : Activity() {
         val vtCard = card()
         vtCard.addView(tv("🔑  VirusTotal (ixtiyoriy)", 16f, true))
         vtCard.addView(
-            tv("Kalit kiritilsa, 60+ antivirus bazasi bilan solishtiriladi. Faqat fayl xeshi yuboriladi.", 12f, false, pal.sub)
+            tv("Kalit kiritilsa, 60+ antivirus bazasi bilan solishtiriladi. Faqat fayl xeshi yuboriladi. Kalitni virustotal.com saytida bepul ro'yxatdan o'tib, profil → API key bo'limidan olasiz.", 12f, false, pal.sub)
         )
         keyInput = field("API kaliti")
         keyInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -437,6 +478,18 @@ class MainActivity : Activity() {
         col.addView(evHead)
         events = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(events)
+
+        val ver = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (e: Exception) {
+            null
+        }
+        col.addView(
+            tv("Qo'riqchi Pro ${ver ?: ""}  •  evristik tekshiruv, antivirus o'rnini bosmaydi", 11f, false, pal.sub).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(18), 0, 0)
+            }
+        )
 
         setContentView(root)
     }
@@ -529,6 +582,20 @@ class MainActivity : Activity() {
         refreshGuardUi()
     }
 
+    private fun counterTile(num: Int, label: String, color: Int): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(6), dp(12), dp(6), dp(12))
+            background = shape(pal.field, 14, pal.line)
+            addView(tv("$num", 22f, true, color).apply { gravity = Gravity.CENTER })
+            addView(tv(label, 12f, false, pal.sub).apply { gravity = Gravity.CENTER })
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply {
+                leftMargin = dp(4)
+                rightMargin = dp(4)
+            }
+        }
+
     private fun refreshSummary() {
         summaryBox.removeAllViews()
         val last = prefs.getLong("lastScan", 0L)
@@ -538,29 +605,48 @@ class MainActivity : Activity() {
             c.addView(tv("Bir bosishda barcha o'rnatilgan ilovalarni tekshiring.", 12f, false, pal.sub))
             c.addView(button("Hozir tekshirish", pal.accent) { scanInstalled() })
         } else {
-            val risky = prefs.getInt("lastRisky", 0)
             val total = prefs.getInt("lastTotal", 0)
+            val risky = prefs.getInt("lastRisky", 0)
+            val dangerSaved = prefs.getInt("lastDanger", -1)
+            val danger = if (dangerSaved >= 0) dangerSaved else 0
+            val susp = if (dangerSaved >= 0) prefs.getInt("lastSusp", 0) else risky
+            val safe = (total - danger - susp).coerceAtLeast(0)
+            val ratio = if (total > 0) safe.toFloat() / total else 1f
             val tone = when {
-                risky == 0 -> pal.good
-                risky <= 3 -> pal.warn
-                else -> pal.bad
+                danger > 0 -> pal.bad
+                susp > 0 -> pal.warn
+                else -> pal.good
             }
+            val title = when {
+                danger > 0 -> "Xavfli ilovalar topildi"
+                susp > 0 -> "Ba'zi ilovalar e'tibor talab qiladi"
+                else -> "Xavfli belgilar topilmadi"
+            }
+
+            val ring = ScoreRing(this, ratio, tone, pal.line, "${(ratio * 100).toInt()}%", pal.ink)
+            ring.layoutParams = LinearLayout.LayoutParams(dp(150), dp(150)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+            c.addView(ring)
+            c.addView(tv(title, 17f, true, tone).apply { gravity = Gravity.CENTER })
+            val fmt = SimpleDateFormat("dd.MM  HH:mm", Locale.getDefault())
+            c.addView(
+                tv("$safe / $total ta ilovada xavf belgisi yo'q  •  ${fmt.format(Date(last))}", 12f, false, pal.sub)
+                    .apply { gravity = Gravity.CENTER }
+            )
+
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = lp(14)
             }
-            val big = tv("$risky", 40f, true, tone)
-            big.setPadding(0, 0, dp(16), 0)
-            val info = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
-                addView(tv(if (risky == 0) "Hammasi joyida" else "ta ilova e'tibor talab qiladi", 16f, true))
-                val fmt = SimpleDateFormat("dd.MM  HH:mm", Locale.getDefault())
-                addView(tv("Oxirgi tekshiruv: ${fmt.format(Date(last))}  •  $total ta ilova", 12f, false, pal.sub))
-            }
-            row.addView(big)
-            row.addView(info)
+            row.addView(counterTile(danger, "Xavfli", pal.bad))
+            row.addView(counterTile(susp, "Shubhali", pal.warn))
+            row.addView(counterTile(safe, "Toza", pal.good))
             c.addView(row)
+            c.addView(tv("Bu evristik tekshiruv: \"toza\" degani kafolat emas.", 11f, false, pal.sub).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(8), 0, 0)
+            })
         }
         summaryBox.addView(c)
     }
@@ -699,6 +785,32 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /** Oddiy tilda "endi nima qilay?" maslahati. */
+    private fun adviceFor(r: Report, installed: Boolean): String {
+        val hot = r.level == Level.CRITICAL || r.level == Level.HIGH
+        val isFile = !installed && r.sha256 != null
+        return when {
+            isFile && hot ->
+                "Nima qilish kerak: bu faylni O'RNATMANG va o'chiring. Yuboruvchiga ishonmang, agar o'rnatgan bo'lsangiz, darhol ilovani o'chiring."
+            isFile && r.level == Level.MEDIUM ->
+                "Nima qilish kerak: ishonchli manbadan bo'lmasa, o'rnatmang. Yuboruvchidan fayl nima ekanini so'rang."
+            isFile ->
+                "Aniq xavf belgisi topilmadi. Baribir faqat ishonchli manbadan o'rnating."
+            installed && hot ->
+                "Nima qilish kerak: ilovani tanimasangiz, darhol o'chiring. Bank va Telegram parollarini boshqa qurilmadan almashtirishni o'ylab ko'ring."
+            installed && r.level == Level.MEDIUM ->
+                "Nima qilish kerak: ilovani taniysizmi? Tanimasangiz, o'chiring yoki ruxsatlarini cheklang."
+            installed ->
+                "Hozircha xavfli belgi yo'q. Ilovani yangilab turing."
+            hot ->
+                "Nima qilish kerak: havolani OCHMANG va hech kimga yubormang. Bank ma'lumotlarini kiritmang."
+            r.level == Level.MEDIUM ->
+                "Nima qilish kerak: havolani ochishdan oldin manzilini rasmiy sayt bilan solishtiring."
+            else ->
+                "Aniq xavf belgisi topilmadi, lekin shubhali xabar bo'lsa, ehtiyot bo'ling."
+        }
+    }
+
     private fun showReport(r: Report, installed: Boolean, index: Int = -1): View {
         val wrap = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -738,6 +850,11 @@ class MainActivity : Activity() {
         c.addView(top)
         c.addView(tv(r.pkg, 12f, false, pal.sub))
         c.addView(tv("${r.level.title}  •  ${r.score}/100", 14f, true, r.level.color))
+        c.addView(tv(adviceFor(r, installed), 13f, false, pal.ink).apply {
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = shape(pal.field, 10, r.level.color)
+            layoutParams = lp(6)
+        })
         r.findings.forEach {
             c.addView(tv((if (it.points > 0) "⚠  " else "✔  ") + it.text, 13f))
         }
@@ -812,6 +929,8 @@ class MainActivity : Activity() {
                     .putLong("lastScan", System.currentTimeMillis())
                     .putInt("lastTotal", list.size)
                     .putInt("lastRisky", risky.size)
+                    .putInt("lastDanger", list.count { it.score >= 50 })
+                    .putInt("lastSusp", list.count { it.score in 25..49 })
                     .apply()
                 refreshSummary()
                 status.text = "${list.size} ta ilova tekshirildi: ${risky.size} tasi e'tibor talab qiladi."
@@ -961,12 +1080,22 @@ class MainActivity : Activity() {
             }
             val finalRep = rep
             val finalErr = err
+            if (finalRep != null) {
+                try {
+                    val why = finalRep.findings.filter { it.points > 0 }.maxByOrNull { it.points }?.text
+                        ?: "Xavfli belgilar topilmadi"
+                    Store.add(this, "Fayl: ${finalRep.level.title}, ${finalRep.label}", why, finalRep.score)
+                } catch (e: Exception) {
+                    // tarixga yozilmasa ham natija ko'rsatilaveradi
+                }
+            }
             runOnUiThread {
                 if (finalRep == null) {
                     status.text = finalErr ?: "Xatolik"
                 } else {
                     status.text = ""
                     showReport(finalRep, false)
+                    refreshEvents()
                 }
             }
         }.start()
