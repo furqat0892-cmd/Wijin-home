@@ -19,6 +19,7 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.net.Uri
+import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -170,6 +171,11 @@ class MainActivity : Activity() {
     private lateinit var famChat: EditText
     private lateinit var famName: EditText
     private var lastText = ""
+    private lateinit var callStatus: TextView
+    private lateinit var callBtn: TextView
+    private lateinit var callInput: EditText
+    private lateinit var netStatus: TextView
+    private lateinit var netBtn: TextView
     private var scrollRoot: ScrollView? = null
     private lateinit var msgInput: EditText
     private lateinit var msgCard: View
@@ -283,6 +289,8 @@ class MainActivity : Activity() {
             refreshGuardUi()
             refreshEvents()
             refreshShieldUi()
+            refreshCallUi()
+            refreshNetUi()
             Blocklist.maybeRefresh(applicationContext)
         }
     }
@@ -728,6 +736,124 @@ class MainActivity : Activity() {
         shieldBtn.visibility = if (on) View.GONE else View.VISIBLE
     }
 
+    private fun callShieldOn(): Boolean {
+        if (Build.VERSION.SDK_INT < 29) return false
+        return try {
+            val rm = getSystemService(android.app.role.RoleManager::class.java)
+            rm != null && rm.isRoleHeld(android.app.role.RoleManager.ROLE_CALL_SCREENING)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun refreshCallUi() {
+        val on = callShieldOn()
+        callStatus.text = if (on) {
+            "✅ Faol: noma'lum yoki xavfli raqamdan qo'ng'iroq kelsa, ogohlantiriladi."
+        } else {
+            "Hozir o'chiq. Yoqish uchun Qo'riqchi Pro ni qo'ng'iroq filtri qilib tanlang."
+        }
+        callStatus.setTextColor(if (on) pal.good else pal.warn)
+        callBtn.visibility = if (on) View.GONE else View.VISIBLE
+    }
+
+    private fun requestCallRole() {
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                val rm = getSystemService(android.app.role.RoleManager::class.java)
+                if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_CALL_SCREENING)) {
+                    startActivityForResult(rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_CALL_SCREENING), 21)
+                    return
+                }
+            } catch (e: Exception) {
+                // pastdagi xabar ko'rsatiladi
+            }
+        }
+        toast("Bu telefonda to'g'ridan-to'g'ri yoqib bo'lmadi. Quyidagi yo'riqnomadan foydalaning")
+    }
+
+    private fun addBlackNumber() {
+        val n = callInput.text.toString().trim()
+        if (Blocklist.addLocalPhone(this, n)) {
+            callInput.setText("")
+            baseInfo.text = Blocklist.info(this)
+            toast("Qora ro'yxatga qo'shildi")
+        } else {
+            toast("Raqam noto'g'ri")
+        }
+    }
+
+    private fun refreshNetUi() {
+        if (DnsShield.running) {
+            netStatus.text = "✅ Faol: ${DnsShield.total} ta so'rov ko'rildi, ${DnsShield.blockedCount} tasi to'sildi."
+            netStatus.setTextColor(pal.good)
+            netBtn.text = "Nazoratni o'chirish"
+        } else {
+            netStatus.text = "Hozir o'chiq."
+            netStatus.setTextColor(pal.warn)
+            netBtn.text = "Nazoratni yoqish"
+        }
+    }
+
+    private fun toggleNet() {
+        if (DnsShield.running) {
+            startService(Intent(this, DnsShield::class.java).setAction(DnsShield.ACTION_STOP))
+            netStatus.postDelayed({ refreshNetUi() }, 800)
+            return
+        }
+        val i = VpnService.prepare(this)
+        if (i != null) {
+            startActivityForResult(i, 41)
+        } else {
+            startNet()
+        }
+    }
+
+    private fun startNet() {
+        startService(Intent(this, DnsShield::class.java))
+        netStatus.postDelayed({ refreshNetUi() }, 800)
+    }
+
+    private fun showNet() {
+        results.removeAllViews()
+        status.text = ""
+        refreshNetUi()
+        val list = DnsShield.recent()
+        val head = card(0)
+        head.addView(cardHeader("🛰️", "So'nggi ulanishlar", "Qaysi ilova qaysi manzilni so'ragani. Ilova nomi ba'zi telefonlarda aniqlanmasligi mumkin.", 0xFF0EA5E9.toInt()))
+        head.addView(
+            tv(
+                if (DnsShield.running) "Nazorat faol: ${DnsShield.total} ta so'rov, ${DnsShield.blockedCount} tasi to'sildi."
+                else "Nazorat o'chiq. Avval «Nazoratni yoqish» ni bosing.",
+                13f, true, if (DnsShield.running) pal.good else pal.warn
+            ).apply { layoutParams = lp(8) }
+        )
+        results.addView(head)
+        if (list.isEmpty()) {
+            results.addView(card().apply {
+                addView(tv("Hali ma'lumot yo'q. Nazorat yoqilgach, bir oz internetdan foydalaning.", 13f, false, pal.sub))
+            })
+            scrollToResults()
+            return
+        }
+        val fmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+        val box = card()
+        var lastKey = ""
+        var shown = 0
+        for (e in list) {
+            val key = e.app + "|" + e.domain
+            if (key == lastKey) continue
+            lastKey = key
+            if (shown >= 80) break
+            shown++
+            val mark = if (e.blocked) "⛔ " else if (e.flagged) "⚠️ " else ""
+            val color = if (e.blocked) pal.bad else if (e.flagged) pal.warn else pal.ink
+            box.addView(tv("$mark${fmt.format(Date(e.time))}  ${e.app} → ${e.domain}", 12f, e.blocked || e.flagged, color))
+        }
+        results.addView(box)
+        scrollToResults()
+    }
+
     private fun findFamChat() {
         val t = famToken.text.toString().trim()
         if (!Family.validToken(t)) {
@@ -1010,6 +1136,50 @@ class MainActivity : Activity() {
         fam.addView(famBody)
         col.addView(fam)
 
+        // Qo'ng'iroq qalqoni
+        val call = card()
+        call.addView(cardHeader("📞", "Qo'ng'iroq qalqoni", "Xavf bazasidagi yoki o'zingiz qo'shgan raqamdan qo'ng'iroq kelsa, ogohlantiradi yoki rad etadi.", 0xFFF43F5E.toInt()))
+        callStatus = tv("", 13f, true)
+        callStatus.layoutParams = lp(8)
+        call.addView(callStatus)
+        callBtn = button("Qalqonni yoqish", 0xFFF43F5E.toInt()) { requestCallRole() }
+        call.addView(callBtn)
+        val rej = Switch(this)
+        rej.text = "Bazadagi raqamni avtomatik rad etish"
+        rej.setTextColor(pal.ink)
+        rej.isChecked = prefs.getBoolean("call_reject", false)
+        rej.setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("call_reject", on).apply() }
+        rej.layoutParams = lp(10)
+        call.addView(rej)
+        callInput = field("Qora ro'yxatga raqam (+998...)")
+        callInput.inputType = InputType.TYPE_CLASS_PHONE
+        call.addView(callInput)
+        call.addView(button("Raqamni qora ro'yxatga qo'shish", 0xFFF43F5E.toInt()) { addBlackNumber() })
+        call.addView(
+            tv(
+                "Yoqilmasa: Sozlamalar → Ilovalar → Standart ilovalar → «Qo'ng'iroqlarni aniqlash va spamdan himoya» ichidan Qo'riqchi Pro ni tanlang.",
+                11f, false, pal.sub
+            ).apply { layoutParams = lp(8) }
+        )
+        col.addView(call)
+
+        // Tarmoq nazorati
+        val net = card()
+        net.addView(cardHeader("🛰️", "Tarmoq nazorati", "Ilovalar qaysi manzillarga ulanayotganini ko'radi va xavfli manzillarni to'sadi. Faqat manzil nomlari ko'riladi, ma'lumotingiz o'qilmaydi.", 0xFF0EA5E9.toInt()))
+        netStatus = tv("", 13f, true)
+        netStatus.layoutParams = lp(8)
+        net.addView(netStatus)
+        netBtn = button("Nazoratni yoqish", 0xFF0EA5E9.toInt()) { toggleNet() }
+        net.addView(netBtn)
+        net.addView(button("So'nggi ulanishlar", 0xFF0284C7.toInt()) { showNet() })
+        net.addView(
+            tv(
+                "Eslatma: tizim sozlamasidagi «Shaxsiy DNS» (Private DNS) yoqilgan bo'lsa, nazorat ishlamaydi: Sozlamalar → Ulanishlar → Shaxsiy DNS → O'chiq. Yoqilganda tepada VPN belgisi (kalit) ko'rinadi, bu normal.",
+                11f, false, pal.sub
+            ).apply { layoutParams = lp(8) }
+        )
+        col.addView(net)
+
         // Umumiy xavf bazasi
         val base = card()
         base.addView(cardHeader("🌐", "Umumiy xavf bazasi", "Firibgar raqam, havola va fayllar ro'yxati internetdan yangilanadi va tekshiruvlarda ishlatiladi.", 0xFF0891B2.toInt()))
@@ -1115,6 +1285,8 @@ class MainActivity : Activity() {
         }
 
         refreshShieldUi()
+        refreshCallUi()
+        refreshNetUi()
         setContentView(root)
     }
 
@@ -1664,6 +1836,14 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 31) {
             if (resultCode == RESULT_OK) startApp() else finish()
+            return
+        }
+        if (requestCode == 41) {
+            if (resultCode == RESULT_OK) startNet() else toast("Ruxsat berilmadi")
+            return
+        }
+        if (requestCode == 21) {
+            refreshCallUi()
             return
         }
         if (requestCode == 11 && resultCode == RESULT_OK) {

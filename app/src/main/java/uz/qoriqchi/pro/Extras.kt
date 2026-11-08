@@ -13,19 +13,32 @@ import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
+import android.net.ConnectivityManager
+import android.net.VpnService
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.provider.Settings
+import android.system.OsConstants
+import android.telecom.Call
+import android.telecom.CallScreeningService
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.view.View
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -831,10 +844,25 @@ object Blocklist {
         return d
     }
 
-    fun hasPhone(c: Context, number: String): Boolean {
-        val d = data(c) ?: return false
+    private fun localPhones(c: Context): Set<String> =
+        HashSet(prefs(c).getStringSet("bl_local", emptySet()) ?: emptySet())
+
+    /** Foydalanuvchi o'zi qo'shgan raqam. Raqam noto'g'ri bo'lsa false. */
+    fun addLocalPhone(c: Context, number: String): Boolean {
         val k = digits9(number)
-        return k.isNotEmpty() && k in d.phones
+        if (k.isEmpty()) return false
+        val s = HashSet(localPhones(c))
+        s.add(k)
+        prefs(c).edit().putStringSet("bl_local", s).apply()
+        return true
+    }
+
+    fun hasPhone(c: Context, number: String): Boolean {
+        val k = digits9(number)
+        if (k.isEmpty()) return false
+        if (k in localPhones(c)) return true
+        val d = data(c) ?: return false
+        return k in d.phones
     }
 
     fun hasHash(c: Context, sha: String?): Boolean {
@@ -859,8 +887,9 @@ object Blocklist {
     }
 
     fun info(c: Context): String {
-        val d = data(c) ?: return "Baza hali yuklanmagan. «Bazani yangilash» ni bosing."
-        return "Yangilangan: ${d.updated}  •  ${d.phones.size} raqam, ${d.domains.size} havola, ${d.hashes.size} fayl, ${d.phrases.size} ibora"
+        val own = localPhones(c).size
+        val d = data(c) ?: return "Baza hali yuklanmagan. «Bazani yangilash» ni bosing.  •  Sizning raqamlaringiz: $own"
+        return "Yangilangan: ${d.updated}  •  ${d.phones.size} raqam, ${d.domains.size} havola, ${d.hashes.size} fayl, ${d.phrases.size} ibora  •  Sizning raqamlaringiz: $own"
     }
 
     /** Internetdan yuklaydi. Natija matni qaytariladi. Tarmoq oqimida chaqiring. */
@@ -1110,5 +1139,368 @@ class MessageShield : NotificationListenerService() {
         getSystemService(NotificationManager::class.java).notify(id, nt)
 
         Store.add(this, "Firibgar xabar: $who", why, r.score)
+    }
+}
+
+// =====================================================================
+// 9. Qo'ng'iroq qalqoni
+// =====================================================================
+
+class CallShield : CallScreeningService() {
+
+    override fun onScreenCall(callDetails: Call.Details) {
+        var resp = CallScreeningService.CallResponse.Builder().build()
+        try {
+            val num = callDetails.handle?.schemeSpecificPart ?: ""
+            val incoming = if (Build.VERSION.SDK_INT >= 29) {
+                callDetails.callDirection == Call.Details.DIRECTION_INCOMING
+            } else {
+                true
+            }
+            if (incoming && num.isNotEmpty() && Blocklist.hasPhone(this, num)) {
+                val reject = getSharedPreferences("qp", Context.MODE_PRIVATE).getBoolean("call_reject", false)
+                alert(num, reject)
+                if (reject) {
+                    resp = CallScreeningService.CallResponse.Builder()
+                        .setDisallowCall(true)
+                        .setRejectCall(true)
+                        .setSkipNotification(true)
+                        .build()
+                }
+            }
+        } catch (e: Exception) {
+            // xatolikda qo'ng'iroqqa aralashmaymiz
+        }
+        respondToCall(callDetails, resp)
+    }
+
+    private fun alert(num: String, rejected: Boolean) {
+        Notifier.channels(this)
+        val id = (System.currentTimeMillis() % 100000L).toInt() + 7000
+        val pi = PendingIntent.getActivity(
+            this, id, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val extra = if (rejected) " Qo'ng'iroq avtomatik rad etildi." else ""
+        val nt = Notification.Builder(this, Notifier.CH_ALERT)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle("⚠️ Firibgar raqamdan qo'ng'iroq")
+            .setContentText("$num xavf bazasida bor.$extra")
+            .setStyle(
+                Notification.BigTextStyle().bigText(
+                    "$num raqami firibgarlikda ko'rilgan.$extra\nHech qachon kod, karta raqami yoki parol aytmang. Bank xodimi bunday narsani so'ramaydi."
+                )
+            )
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(id, nt)
+        Store.add(this, "Firibgar raqamdan qo'ng'iroq", num + if (rejected) " (rad etildi)" else "", 70)
+    }
+}
+
+// =====================================================================
+// 10. Tarmoq nazorati (faqat DNS so'rovlarini ko'radigan mahalliy VPN)
+// =====================================================================
+
+data class DnsEntry(
+    val time: Long,
+    val app: String,
+    val domain: String,
+    val blocked: Boolean,
+    val flagged: Boolean
+)
+
+class DnsShield : VpnService() {
+
+    companion object {
+        const val ACTION_STOP = "uz.qoriqchi.pro.DNS_STOP"
+        private const val VPN_DNS = "10.77.0.1"
+
+        @Volatile
+        var running = false
+
+        @Volatile
+        var total = 0
+
+        @Volatile
+        var blockedCount = 0
+
+        private val log = ArrayList<DnsEntry>()
+
+        fun recent(): List<DnsEntry> = synchronized(log) { ArrayList(log) }
+
+        private fun record(e: DnsEntry) {
+            synchronized(log) {
+                log.add(0, e)
+                while (log.size > 150) log.removeAt(log.size - 1)
+            }
+        }
+    }
+
+    private var tun: ParcelFileDescriptor? = null
+    private var worker: Thread? = null
+    private val pool = Executors.newCachedThreadPool()
+    private val outLock = Any()
+    private val alertedAt = HashMap<String, Long>()
+
+    private val telegramApps = setOf(
+        "org.telegram.messenger",
+        "org.telegram.messenger.web",
+        "org.thunderdog.challegram",
+        "org.telegram.plus",
+        "nekox.messenger"
+    )
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            shutdown()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (!running) start()
+        return START_NOT_STICKY
+    }
+
+    override fun onRevoke() {
+        shutdown()
+        super.onRevoke()
+    }
+
+    override fun onDestroy() {
+        shutdown()
+        super.onDestroy()
+    }
+
+    private fun start() {
+        val fd: ParcelFileDescriptor? = try {
+            Builder()
+                .setSession("Qo'riqchi Pro")
+                .addAddress("10.77.0.2", 32)
+                .addDnsServer(VPN_DNS)
+                .addRoute(VPN_DNS, 32)
+                .establish()
+        } catch (e: Exception) {
+            null
+        }
+        if (fd == null) {
+            running = false
+            return
+        }
+        tun = fd
+        total = 0
+        blockedCount = 0
+        running = true
+        getSharedPreferences("qp", Context.MODE_PRIVATE).edit().putBoolean("dns_on", true).apply()
+        val t = Thread { loop(fd) }
+        worker = t
+        t.start()
+    }
+
+    private fun shutdown() {
+        running = false
+        try {
+            tun?.close()
+        } catch (e: Exception) {
+            // yopilgan
+        }
+        tun = null
+        getSharedPreferences("qp", Context.MODE_PRIVATE).edit().putBoolean("dns_on", false).apply()
+    }
+
+    private fun loop(fd: ParcelFileDescriptor) {
+        val input = FileInputStream(fd.fileDescriptor)
+        val output = FileOutputStream(fd.fileDescriptor)
+        val buf = ByteArray(32767)
+        try {
+            while (running) {
+                val n = input.read(buf)
+                if (n < 0) break
+                if (n == 0) continue
+                handlePacket(buf.copyOf(n), output)
+            }
+        } catch (e: Exception) {
+            // tun yopildi
+        }
+        running = false
+    }
+
+    private fun u16(b: ByteArray, i: Int): Int = ((b[i].toInt() and 0xFF) shl 8) or (b[i + 1].toInt() and 0xFF)
+
+    private fun handlePacket(pkt: ByteArray, out: FileOutputStream) {
+        if (pkt.size < 28) return
+        if ((pkt[0].toInt() shr 4) != 4) return
+        val ihl = (pkt[0].toInt() and 0x0F) * 4
+        if (pkt[9].toInt() != 17 || pkt.size < ihl + 8) return
+        val srcPort = u16(pkt, ihl)
+        val dstPort = u16(pkt, ihl + 2)
+        if (dstPort != 53) return
+        val dns = pkt.copyOfRange(ihl + 8, pkt.size)
+        val q = parseName(dns) ?: return
+        val domain = q.first
+        val srcIp = pkt.copyOfRange(12, 16)
+        val dstIp = pkt.copyOfRange(16, 20)
+
+        val uid = ownerUid(srcIp, srcPort, dstIp)
+        val pkg = pkgOf(uid)
+        val app = if (pkg != null) labelOf(pkg) else if (uid in 0..9999) "tizim" else "noma'lum ilova"
+        val now = System.currentTimeMillis()
+        total++
+
+        val hit = Blocklist.domainHit(this, domain)
+        if (hit != null) {
+            blockedCount++
+            record(DnsEntry(now, app, domain, true, false))
+            notifyOnce("blk|$app|$hit", "Xavfli manzil bloklandi", "$app → $domain", 60)
+            val resp = nxdomain(dns, q.second)
+            if (resp != null) reply(out, srcIp, srcPort, dstIp, resp)
+            return
+        }
+
+        var flagged = false
+        if (domain == "api.telegram.org" && pkg != null && pkg !in telegramApps && pkg != packageName) {
+            flagged = true
+            notifyOnce(
+                "tg|$pkg", "Shubhali: Telegram bot manziliga ulanish",
+                "$app ilovasi Telegram bot serveriga ulanmoqda. Zararli dasturlar ma'lumotni shu yo'l bilan yuboradi. Ilovani taniysizmi?",
+                55
+            )
+        }
+        record(DnsEntry(now, app, domain, false, flagged))
+        pool.execute { forward(dns, out, srcIp, srcPort, dstIp) }
+    }
+
+    private fun notifyOnce(key: String, title: String, detail: String, score: Int) {
+        val now = System.currentTimeMillis()
+        val last = alertedAt[key]
+        if (last != null && now - last < 6L * 3600 * 1000) return
+        alertedAt[key] = now
+        try {
+            Store.add(this, title, detail, score)
+        } catch (e: Exception) {
+            // yozilmasa ham davom etadi
+        }
+    }
+
+    private fun ownerUid(srcIp: ByteArray, srcPort: Int, dstIp: ByteArray): Int {
+        if (Build.VERSION.SDK_INT < 29) return -1
+        return try {
+            val cm = getSystemService(ConnectivityManager::class.java)
+            cm.getConnectionOwnerUid(
+                OsConstants.IPPROTO_UDP,
+                InetSocketAddress(InetAddress.getByAddress(srcIp), srcPort),
+                InetSocketAddress(InetAddress.getByAddress(dstIp), 53)
+            )
+        } catch (e: Exception) {
+            -1
+        }
+    }
+
+    private fun pkgOf(uid: Int): String? {
+        if (uid < 10000) return null
+        return try {
+            packageManager.getPackagesForUid(uid)?.firstOrNull()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun labelOf(pkg: String): String = try {
+        val pm = packageManager
+        pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString()
+    } catch (e: Exception) {
+        pkg
+    }
+
+    /** DNS so'rovidan domen nomi va savol qismi tugaydigan joyni oladi. */
+    private fun parseName(d: ByteArray): Pair<String, Int>? {
+        if (d.size < 17) return null
+        var i = 12
+        val sb = StringBuilder()
+        while (true) {
+            if (i >= d.size) return null
+            val len = d[i].toInt() and 0xFF
+            if (len == 0) {
+                i++
+                break
+            }
+            if (len > 63 || i + 1 + len > d.size) return null
+            if (sb.isNotEmpty()) sb.append('.')
+            sb.append(String(d, i + 1, len, Charsets.US_ASCII))
+            i += 1 + len
+        }
+        if (i + 4 > d.size) return null
+        return Pair(sb.toString().lowercase(Locale.ROOT), i + 4)
+    }
+
+    /** "Bunday domen yo'q" javobi. */
+    private fun nxdomain(dns: ByteArray, qEnd: Int): ByteArray? {
+        if (dns.size < qEnd) return null
+        val r = dns.copyOf(qEnd)
+        r[2] = 0x81.toByte()
+        r[3] = 0x83.toByte()
+        for (k in 6..11) r[k] = 0
+        return r
+    }
+
+    private fun forward(dns: ByteArray, out: FileOutputStream, clientIp: ByteArray, clientPort: Int, serverIp: ByteArray) {
+        val servers = arrayOf("1.1.1.1", "8.8.8.8")
+        for (s in servers) {
+            try {
+                val sock = DatagramSocket()
+                try {
+                    protect(sock)
+                    sock.soTimeout = 2500
+                    sock.send(DatagramPacket(dns, dns.size, InetAddress.getByName(s), 53))
+                    val rb = ByteArray(4096)
+                    val rp = DatagramPacket(rb, rb.size)
+                    sock.receive(rp)
+                    reply(out, clientIp, clientPort, serverIp, rb.copyOf(rp.length))
+                    return
+                } finally {
+                    sock.close()
+                }
+            } catch (e: Exception) {
+                // keyingi serverni sinaymiz
+            }
+        }
+    }
+
+    /** DNS javobini IPv4/UDP paket qilib, tun ga yozadi. */
+    private fun reply(out: FileOutputStream, clientIp: ByteArray, clientPort: Int, serverIp: ByteArray, payload: ByteArray) {
+        val total = 28 + payload.size
+        val p = ByteArray(total)
+        p[0] = 0x45.toByte()
+        p[2] = (total shr 8).toByte()
+        p[3] = total.toByte()
+        p[6] = 0x40.toByte()
+        p[8] = 64
+        p[9] = 17
+        System.arraycopy(serverIp, 0, p, 12, 4)
+        System.arraycopy(clientIp, 0, p, 16, 4)
+        var sum = 0
+        var i = 0
+        while (i < 20) {
+            sum += u16(p, i)
+            i += 2
+        }
+        while ((sum shr 16) != 0) sum = (sum and 0xFFFF) + (sum shr 16)
+        val ck = sum.inv() and 0xFFFF
+        p[10] = (ck shr 8).toByte()
+        p[11] = ck.toByte()
+        p[21] = 53
+        p[22] = (clientPort shr 8).toByte()
+        p[23] = clientPort.toByte()
+        val ul = 8 + payload.size
+        p[24] = (ul shr 8).toByte()
+        p[25] = ul.toByte()
+        System.arraycopy(payload, 0, p, 28, payload.size)
+        synchronized(outLock) {
+            try {
+                out.write(p)
+            } catch (e: Exception) {
+                // tun yopilgan
+            }
+        }
     }
 }
