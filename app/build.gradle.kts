@@ -11,8 +11,8 @@ android {
         applicationId = "uz.qoriqchi.pro"
         minSdk = 28
         targetSdk = 34
-        versionCode = 10
-        versionName = "5.5"
+        versionCode = 11
+        versionName = "5.6"
     }
 
     signingConfigs {
