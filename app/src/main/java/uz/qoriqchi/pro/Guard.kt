@@ -88,6 +88,7 @@ object Store {
             i++
         }
         prefs(c).edit().putString(KEY, out.toString()).apply()
+        if (score >= 50) Family.alertAsync(c, title, detail, score)
     }
 
     @Synchronized

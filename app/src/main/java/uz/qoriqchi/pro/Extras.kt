@@ -1,8 +1,12 @@
 package uz.qoriqchi.pro
 
 import android.app.KeyguardManager
+import android.app.Notification
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.admin.DevicePolicyManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
@@ -12,8 +16,14 @@ import android.graphics.RectF
 import android.os.Build
 import android.os.SystemClock
 import android.provider.Settings
+import android.service.notification.NotificationListenerService
+import android.service.notification.StatusBarNotification
 import android.view.View
+import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
 import kotlin.math.cos
@@ -573,7 +583,11 @@ object ScamText {
             .replace('`', '\'')
             .replace('´', '\'')
 
-    fun analyze(raw: String): Report {
+    private val phoneRe = Regex("\\+?\\d[\\d\\s\\-()]{7,16}\\d")
+
+    fun analyze(raw: String): Report = analyze(raw, null, null)
+
+    fun analyze(raw: String, ctx: Context?, sender: String?): Report {
         val text = norm(raw)
         val f = ArrayList<Finding>()
         var total = 0
@@ -593,9 +607,32 @@ object ScamText {
             total += 15
         }
 
+        // Umumiy xavf bazasi: ibora va raqamlar
+        if (ctx != null) {
+            for (ph in Blocklist.phraseHits(ctx, text).take(2)) {
+                f.add(Finding(25, "Umumiy xavf bazasidagi ibora: «$ph»"))
+                total += 25
+            }
+            val nums = LinkedHashSet<String>()
+            phoneRe.findAll(raw).forEach { nums.add(it.value) }
+            if (!sender.isNullOrBlank()) nums.add(sender)
+            for (n in nums) {
+                if (Blocklist.hasPhone(ctx, n)) {
+                    f.add(Finding(40, "Raqam firibgarlikda ko'rilgan: ${n.trim().take(20)}"))
+                    total += 40
+                    break
+                }
+            }
+        }
+
         // Havolalar
         val urls = urlRe.findAll(raw).map { it.value }.distinct().take(3).toList()
         for (u in urls) {
+            val bhit = if (ctx != null) Blocklist.domainHit(ctx, u) else null
+            if (bhit != null) {
+                f.add(Finding(50, "Havola xavf bazasida bor: $bhit"))
+                total += 50
+            }
             val lr = try {
                 LinkCheck.analyze(u)
             } catch (e: Exception) {
@@ -720,5 +757,358 @@ class RadarView(
         canvas.drawCircle(cx, cy, 4f * d, p)
 
         if (running) postInvalidateOnAnimation()
+    }
+}
+
+// =====================================================================
+// 6. Umumiy xavf bazasi (GitHub'dan yangilanadi)
+// =====================================================================
+
+object Blocklist {
+    private const val RAW_URL = "https://raw.githubusercontent.com/furqat0892-cmd/Wijin-home/main/blocklist.json"
+
+    private class BlData(
+        val phones: Set<String>,
+        val domains: Set<String>,
+        val hashes: Set<String>,
+        val phrases: List<String>,
+        val updated: String
+    )
+
+    @Volatile
+    private var cache: BlData? = null
+
+    private fun prefs(c: Context) = c.getSharedPreferences("qp", Context.MODE_PRIVATE)
+
+    private fun digits9(s: String): String {
+        val d = s.filter { it.isDigit() }
+        return if (d.length >= 7) d.takeLast(9) else ""
+    }
+
+    private fun hostOf(url: String): String =
+        url.trim().lowercase(Locale.ROOT)
+            .removePrefix("http://").removePrefix("https://").removePrefix("www.")
+            .substringBefore('/').substringBefore('?').substringBefore(':')
+
+    private fun parse(json: String): BlData? {
+        return try {
+            val o = JSONObject(json)
+            fun strings(name: String, f: (String) -> String): Set<String> {
+                val a = o.optJSONArray(name) ?: return emptySet()
+                val out = HashSet<String>()
+                for (i in 0 until a.length()) {
+                    val v = f(a.optString(i, ""))
+                    if (v.isNotEmpty()) out.add(v)
+                }
+                return out
+            }
+            val phrases = ArrayList<String>()
+            val pa = o.optJSONArray("phrases")
+            if (pa != null) {
+                for (i in 0 until pa.length()) {
+                    val v = pa.optString(i, "").trim().lowercase(Locale.ROOT)
+                    if (v.length >= 4) phrases.add(v)
+                }
+            }
+            BlData(
+                strings("phones") { digits9(it) },
+                strings("domains") { hostOf(it) },
+                strings("apk_sha256") { it.trim().lowercase(Locale.ROOT) },
+                phrases,
+                o.optString("updated", "")
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun data(c: Context): BlData? {
+        val cur = cache
+        if (cur != null) return cur
+        val raw = prefs(c).getString("bl_json", null) ?: return null
+        val d = parse(raw)
+        cache = d
+        return d
+    }
+
+    fun hasPhone(c: Context, number: String): Boolean {
+        val d = data(c) ?: return false
+        val k = digits9(number)
+        return k.isNotEmpty() && k in d.phones
+    }
+
+    fun hasHash(c: Context, sha: String?): Boolean {
+        if (sha == null) return false
+        val d = data(c) ?: return false
+        return sha.lowercase(Locale.ROOT) in d.hashes
+    }
+
+    fun domainHit(c: Context, url: String): String? {
+        val d = data(c) ?: return null
+        val h = hostOf(url)
+        if (h.isEmpty()) return null
+        for (x in d.domains) {
+            if (h == x || h.endsWith(".$x")) return x
+        }
+        return null
+    }
+
+    fun phraseHits(c: Context, normText: String): List<String> {
+        val d = data(c) ?: return emptyList()
+        return d.phrases.filter { normText.contains(it) }
+    }
+
+    fun info(c: Context): String {
+        val d = data(c) ?: return "Baza hali yuklanmagan. «Bazani yangilash» ni bosing."
+        return "Yangilangan: ${d.updated}  •  ${d.phones.size} raqam, ${d.domains.size} havola, ${d.hashes.size} fayl, ${d.phrases.size} ibora"
+    }
+
+    /** Internetdan yuklaydi. Natija matni qaytariladi. Tarmoq oqimida chaqiring. */
+    fun refresh(c: Context): String {
+        prefs(c).edit().putLong("bl_try", System.currentTimeMillis()).apply()
+        return try {
+            val conn = URL(RAW_URL).openConnection() as HttpURLConnection
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+            val code = conn.responseCode
+            if (code != 200) {
+                "Yangilab bo'lmadi (server javobi: $code)"
+            } else {
+                val text = conn.inputStream.bufferedReader().use { it.readText() }
+                val d = if (text.length > 1_000_000) null else parse(text)
+                if (d == null) {
+                    "Baza fayli noto'g'ri"
+                } else {
+                    prefs(c).edit()
+                        .putString("bl_json", text)
+                        .putLong("bl_time", System.currentTimeMillis())
+                        .apply()
+                    cache = d
+                    "Baza yangilandi"
+                }
+            }
+        } catch (e: Exception) {
+            "Internet yo'q yoki baza topilmadi"
+        }
+    }
+
+    /** Eskirgan bo'lsa, fonda yangilaydi. */
+    fun maybeRefresh(c: Context) {
+        val p = prefs(c)
+        val now = System.currentTimeMillis()
+        if (now - p.getLong("bl_time", 0L) < 20L * 3600 * 1000) return
+        if (now - p.getLong("bl_try", 0L) < 3600L * 1000) return
+        Thread { refresh(c) }.start()
+    }
+}
+
+// =====================================================================
+// 7. Oila himoyasi (Telegram bot orqali ogohlantirish)
+// =====================================================================
+
+object Family {
+    private fun prefs(c: Context) = c.getSharedPreferences("qp", Context.MODE_PRIVATE)
+
+    fun token(c: Context): String = prefs(c).getString("fam_token", "") ?: ""
+    fun chat(c: Context): String = prefs(c).getString("fam_chat", "") ?: ""
+    fun name(c: Context): String = prefs(c).getString("fam_name", "") ?: ""
+
+    fun isOn(c: Context): Boolean =
+        prefs(c).getBoolean("fam_on", false) && token(c).isNotBlank() && chat(c).isNotBlank()
+
+    fun save(c: Context, token: String, chat: String, name: String) {
+        prefs(c).edit()
+            .putString("fam_token", token.trim())
+            .putString("fam_chat", chat.trim())
+            .putString("fam_name", name.trim())
+            .putBoolean("fam_on", true)
+            .apply()
+    }
+
+    fun disable(c: Context) {
+        prefs(c).edit().putBoolean("fam_on", false).apply()
+    }
+
+    fun validToken(t: String): Boolean = Regex("^\\d{5,15}:[A-Za-z0-9_-]{20,60}$").matches(t.trim())
+
+    private fun post(token: String, chat: String, text: String): String? {
+        return try {
+            val conn = URL("https://api.telegram.org/bot$token/sendMessage").openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+            conn.doOutput = true
+            val body = "chat_id=" + URLEncoder.encode(chat, "UTF-8") + "&text=" + URLEncoder.encode(text, "UTF-8")
+            conn.outputStream.use { it.write(body.toByteArray()) }
+            val code = conn.responseCode
+            if (code == 200) null else "Telegram javobi: $code. Token yoki chat ID noto'g'ri bo'lishi mumkin."
+        } catch (e: Exception) {
+            "Internet yo'q yoki Telegram ochilmadi"
+        }
+    }
+
+    /** Sinov xabari yuboradi. null: muvaffaqiyatli, aks holda xato matni. */
+    fun sendTest(c: Context): String? {
+        val t = token(c)
+        if (!validToken(t)) return "Token shakli noto'g'ri"
+        val n = name(c).ifBlank { "Telefon" }
+        return post(t, chat(c), "✅ Qo'riqchi Pro ulandi: $n\nEndi xavf topilsa, shu yerga xabar keladi.")
+    }
+
+    /** Botga yozilgan oxirgi xabardan chat ID ni topadi. */
+    fun findChatId(token: String): String? {
+        if (!validToken(token)) return null
+        return try {
+            val conn = URL("https://api.telegram.org/bot${token.trim()}/getUpdates").openConnection() as HttpURLConnection
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+            if (conn.responseCode != 200) {
+                null
+            } else {
+                val o = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
+                val arr = o.optJSONArray("result")
+                var id: String? = null
+                if (arr != null) {
+                    var i = arr.length() - 1
+                    while (i >= 0 && id == null) {
+                        val chat = arr.getJSONObject(i).optJSONObject("message")?.optJSONObject("chat")
+                        if (chat != null) id = chat.optLong("id").toString()
+                        i--
+                    }
+                }
+                id
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Jiddiy hodisa bo'lsa (ball 50+), egasiga Telegram orqali xabar yuboradi. */
+    fun alertAsync(c: Context, title: String, detail: String, score: Int) {
+        if (!isOn(c)) return
+        val p = prefs(c)
+        val key = "$title|$detail"
+        val now = System.currentTimeMillis()
+        if (key == p.getString("fam_lastkey", "") && now - p.getLong("fam_lasttime", 0L) < 10L * 60 * 1000) return
+        p.edit().putString("fam_lastkey", key).putLong("fam_lasttime", now).apply()
+        val n = name(c).ifBlank { "Telefon" }
+        val time = SimpleDateFormat("dd.MM HH:mm", Locale.US).format(java.util.Date(now))
+        val msg = "🛡 Qo'riqchi Pro • $n\n⚠️ $title\n$detail\nXavf bahosi: $score/100\n$time"
+        val t = token(c)
+        val ch = chat(c)
+        Thread { post(t, ch, msg) }.start()
+    }
+}
+
+// =====================================================================
+// 8. Xabar qalqoni (kelgan SMS/Telegram xabarlarini firibgarlikka tekshiradi)
+// =====================================================================
+
+class MessageShield : NotificationListenerService() {
+
+    private val seen = LinkedHashMap<String, Long>()
+
+    private val msgApps = setOf(
+        "com.google.android.apps.messaging",
+        "com.samsung.android.messaging",
+        "com.android.mms",
+        "org.telegram.messenger",
+        "org.telegram.messenger.web",
+        "org.thunderdog.challegram",
+        "com.whatsapp",
+        "com.whatsapp.w4b",
+        "com.facebook.orca",
+        "com.viber.voip",
+        "com.imo.android.imoim"
+    )
+
+    override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        try {
+            handle(sbn)
+        } catch (e: Exception) {
+            // qalqon hech qachon ilovani yiqitmasligi kerak
+        }
+    }
+
+    private fun labelOf(pkg: String): String = try {
+        val pm = packageManager
+        pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString()
+    } catch (e: Exception) {
+        pkg
+    }
+
+    @Suppress("DEPRECATION")
+    private fun textOf(n: Notification): String {
+        val ex = n.extras ?: return ""
+        val parts = ArrayList<String>()
+        ex.getCharSequence(Notification.EXTRA_TEXT)?.let { parts.add(it.toString()) }
+        ex.getCharSequence(Notification.EXTRA_BIG_TEXT)?.let { parts.add(it.toString()) }
+        ex.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.forEach { parts.add(it.toString()) }
+        val msgs = ex.getParcelableArray(Notification.EXTRA_MESSAGES)
+        if (msgs != null) {
+            for (m in msgs) {
+                if (m is android.os.Bundle) {
+                    m.getCharSequence("text")?.let { parts.add(it.toString()) }
+                }
+            }
+        }
+        return parts.distinct().joinToString("\n")
+    }
+
+    private fun handle(sbn: StatusBarNotification?) {
+        if (sbn == null) return
+        val pkg = sbn.packageName
+        if (pkg == packageName) return
+        val n = sbn.notification ?: return
+        if ((n.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
+        if (n.category != Notification.CATEGORY_MESSAGE && pkg !in msgApps) return
+
+        val title = n.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
+        val text = textOf(n).trim()
+        if (text.length < 8) return
+
+        val key = pkg + "|" + text.hashCode()
+        val now = System.currentTimeMillis()
+        synchronized(seen) {
+            val old = seen[key]
+            if (old != null && now - old < 10L * 60 * 1000) return
+            seen[key] = now
+            while (seen.size > 60) {
+                val first = seen.keys.iterator().next()
+                seen.remove(first)
+            }
+        }
+
+        val r = ScamText.analyze(text, this, title)
+        if (r.score < 40) return
+
+        val why = r.findings.filter { it.points > 0 }
+            .sortedByDescending { it.points }
+            .take(2)
+            .joinToString("; ") { it.text.trim() }
+        val who = if (title.isNotBlank()) title else labelOf(pkg)
+
+        Notifier.channels(this)
+        val open = Intent(this, MainActivity::class.java).apply {
+            action = Intent.ACTION_SEND
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        val id = (now % 100000L).toInt() + 5000
+        val pi = PendingIntent.getActivity(
+            this, id, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val nt = Notification.Builder(this, Notifier.CH_ALERT)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle("⚠️ Firibgar xabar belgisi (${r.score}/100)")
+            .setContentText("$who: $why")
+            .setStyle(Notification.BigTextStyle().bigText("Kimdan: $who\n$why\nHech qachon kod, karta raqami yoki parol aytmang."))
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(id, nt)
+
+        Store.add(this, "Firibgar xabar: $who", why, r.score)
     }
 }

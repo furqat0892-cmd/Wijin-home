@@ -163,6 +163,13 @@ class MainActivity : Activity() {
     private var scanSub: TextView? = null
     private var scanBar: ProgressBar? = null
     private var scanRadar: RadarView? = null
+    private lateinit var shieldStatus: TextView
+    private lateinit var shieldBtn: TextView
+    private lateinit var baseInfo: TextView
+    private lateinit var famToken: EditText
+    private lateinit var famChat: EditText
+    private lateinit var famName: EditText
+    private var lastText = ""
     private var scrollRoot: ScrollView? = null
     private lateinit var msgInput: EditText
     private lateinit var msgCard: View
@@ -275,6 +282,8 @@ class MainActivity : Activity() {
             refreshSummary()
             refreshGuardUi()
             refreshEvents()
+            refreshShieldUi()
+            Blocklist.maybeRefresh(applicationContext)
         }
     }
 
@@ -697,6 +706,104 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------- Xabar qalqoni, oila, baza ----------
+
+    private fun shieldEnabled(): Boolean {
+        val s = try {
+            Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
+        } catch (e: Exception) {
+            null
+        }
+        return s != null && s.contains(packageName)
+    }
+
+    private fun refreshShieldUi() {
+        val on = shieldEnabled()
+        shieldStatus.text = if (on) {
+            "✅ Faol: kelgan SMS va xabarlar firibgarlikka tekshiriladi."
+        } else {
+            "Hozir o'chiq. Yoqish uchun bildirishnomalarni o'qish ruxsatini bering."
+        }
+        shieldStatus.setTextColor(if (on) pal.good else pal.warn)
+        shieldBtn.visibility = if (on) View.GONE else View.VISIBLE
+    }
+
+    private fun findFamChat() {
+        val t = famToken.text.toString().trim()
+        if (!Family.validToken(t)) {
+            toast("Token shakli noto'g'ri")
+            return
+        }
+        toast("Qidirilmoqda…")
+        Thread {
+            val id = Family.findChatId(t)
+            runOnUiThread {
+                if (id == null) {
+                    toast("Topilmadi. Avval botingizga kirib /start yozing")
+                } else {
+                    famChat.setText(id)
+                    toast("Chat ID topildi")
+                }
+            }
+        }.start()
+    }
+
+    private fun saveFamily() {
+        val t = famToken.text.toString().trim()
+        val c = famChat.text.toString().trim()
+        if (!Family.validToken(t) || c.isEmpty()) {
+            toast("Token va Chat ID ni to'g'ri kiriting")
+            return
+        }
+        Family.save(this, t, c, famName.text.toString())
+        toast("Saqlandi, sinov xabari yuborilmoqda…")
+        Thread {
+            val err = Family.sendTest(this)
+            runOnUiThread { toast(err ?: "Sinov xabari yuborildi. Telegram'ni tekshiring") }
+        }.start()
+    }
+
+    private fun refreshBase() {
+        toast("Yangilanmoqda…")
+        Thread {
+            val msg = Blocklist.refresh(this)
+            runOnUiThread {
+                baseInfo.text = Blocklist.info(this)
+                toast(msg)
+            }
+        }.start()
+    }
+
+    /** Hisobotni egasiga (Telegram yoki boshqa joyga) yuborish uchun matn tayyorlaydi. */
+    private fun reportThreat(r: Report) {
+        val kind = when {
+            r.pkg == "matn" -> "Xabar matni"
+            r.sha256 != null -> "APK fayl"
+            else -> "Havola"
+        }
+        val what = when {
+            r.pkg == "matn" -> lastText.take(600)
+            r.sha256 != null -> "${r.label}\nSHA-256: ${r.sha256}"
+            else -> r.label
+        }
+        val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
+        val body = "Qo'riqchi Pro: xavf haqida xabar\nTur: $kind\n$what\nBall: ${r.score}/100\nSana: $date"
+        val i = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, body)
+        }
+        startActivity(Intent.createChooser(i, "Kimga yuborish"))
+    }
+
+    private fun linkReport(u: String): Report {
+        val r = LinkCheck.analyze(u)
+        val hit = Blocklist.domainHit(this, u) ?: return r
+        return r.copy(
+            score = maxOf(r.score, 90),
+            findings = listOf(Finding(60, "Umumiy xavf bazasida bor: $hit")) + r.findings
+        )
+    }
+
     // ---------- Xabar matni ----------
 
     private fun checkMessage() {
@@ -707,7 +814,8 @@ class MainActivity : Activity() {
         }
         results.removeAllViews()
         status.text = ""
-        showReport(ScamText.analyze(t), false)
+        lastText = t
+        showReport(ScamText.analyze(t, this, null), false)
         scrollToResults()
     }
 
@@ -782,6 +890,32 @@ class MainActivity : Activity() {
         guardCard.addView(permBox)
         col.addView(guardCard)
 
+        // Xabar qalqoni
+        val shield = card()
+        shield.addView(cardHeader("🛡️", "Xabar qalqoni", "SMS yoki Telegram'dan firibgar xabar kelsa, darrov ogohlantiradi. Matn telefondan chiqmaydi va saqlanmaydi.", 0xFF16A34A.toInt()))
+        shieldStatus = tv("", 13f, true)
+        shieldStatus.layoutParams = lp(8)
+        shield.addView(shieldStatus)
+        shieldBtn = button("Ruxsat berish", 0xFF16A34A.toInt()) {
+            openSettings("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+        }
+        shield.addView(shieldBtn)
+        shield.addView(
+            tv(
+                "Ruxsat tugmasi kulrang bo'lib, bosilmasa: Sozlamalar → Ilovalar → Qo'riqchi Pro → yuqori o'ngdagi ⋮ → «Cheklangan sozlamalarga ruxsat berish». Keyin qaytib, ruxsat bering.",
+                11f, false, pal.sub
+            ).apply { layoutParams = lp(8) }
+        )
+        val shRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = lp(8)
+        }
+        shRow.addView(smallBtn("Ilova sozlamalari") {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        })
+        shield.addView(shRow)
+        col.addView(shield)
+
         // Amallar
         col.addView(
             tileRow(
@@ -840,6 +974,53 @@ class MainActivity : Activity() {
         msgBox.addView(msgInput)
         msgBox.addView(button("Xabarni tekshirish", 0xFFEA580C.toInt()) { checkMessage() })
         col.addView(msgBox)
+
+        // Oila himoyasi
+        val fam = card()
+        fam.addView(cardHeader("👪", "Oila himoyasi", "Yaqiningiz telefonida xavf topilsa, sizning Telegram'ingizga xabar boradi.", 0xFF8B5CF6.toInt()))
+        val famBody = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        famBody.addView(
+            tv(
+                "1) Telegram'da @BotFather ga /newbot yozing, bot yarating va tokenni oling.\n2) O'zingiz yaratgan botga kirib /start bosing.\n3) Tokenni shu yerga qo'ying va «Chat ID ni topish» ni bosing.\n4) Yaqiningiz telefonida ham xuddi shu ma'lumotni kiriting va «Saqlash va sinash» ni bosing.\nXabarda faqat jo'natuvchi nomi va xavf sababi bo'ladi, xabar matni yuborilmaydi.",
+                12f, false, pal.sub
+            ).apply { layoutParams = lp(8) }
+        )
+        famToken = field("Bot tokeni")
+        famToken.setText(Family.token(this))
+        famChat = field("Chat ID")
+        famChat.inputType = InputType.TYPE_CLASS_TEXT
+        famChat.setText(Family.chat(this))
+        famName = field("Telefon nomi (masalan: Dadam telefoni)")
+        famName.setText(Family.name(this))
+        famBody.addView(famToken)
+        famBody.addView(famChat)
+        famBody.addView(famName)
+        famBody.addView(button("Chat ID ni topish", 0xFF8B5CF6.toInt()) { findFamChat() })
+        famBody.addView(button("Saqlash va sinash", 0xFF7C3AED.toInt()) { saveFamily() })
+        famBody.addView(button("O'chirish", pal.sub) {
+            Family.disable(this)
+            toast("Oila himoyasi o'chirildi")
+        })
+        fam.addView(button(if (Family.isOn(this)) "Sozlash (yoqilgan)" else "Sozlash", 0xFF8B5CF6.toInt()) {
+            famBody.visibility = if (famBody.visibility == View.GONE) View.VISIBLE else View.GONE
+        })
+        fam.addView(famBody)
+        col.addView(fam)
+
+        // Umumiy xavf bazasi
+        val base = card()
+        base.addView(cardHeader("🌐", "Umumiy xavf bazasi", "Firibgar raqam, havola va fayllar ro'yxati internetdan yangilanadi va tekshiruvlarda ishlatiladi.", 0xFF0891B2.toInt()))
+        baseInfo = tv(Blocklist.info(this), 12f, false, pal.sub)
+        baseInfo.layoutParams = lp(8)
+        base.addView(baseInfo)
+        base.addView(button("Bazani yangilash", 0xFF0891B2.toInt()) { refreshBase() })
+        base.addView(
+            tv("Firibgar raqam yoki havola topsangiz, hisobotdagi «Xabar berish» tugmasi bilan yuboring. Ro'yxatga qo'shilishini egasi tekshiradi.", 11f, false, pal.sub)
+        )
+        col.addView(base)
 
         // VirusTotal
         val vtCard = card()
@@ -933,6 +1114,7 @@ class MainActivity : Activity() {
             v.animate().alpha(1f).translationY(0f).setStartDelay(i * 40L).setDuration(350).start()
         }
 
+        refreshShieldUi()
         setContentView(root)
     }
 
@@ -1415,6 +1597,7 @@ class MainActivity : Activity() {
                 layoutParams = lp(8)
             }
             row.addView(smallBtn("Ulashish") { share(r) })
+            if (r.score >= 25) row.addView(smallBtn("Xabar berish") { reportThreat(r) })
             c.addView(row)
         }
         wrap.alpha = 0f
@@ -1505,7 +1688,7 @@ class MainActivity : Activity() {
             val url = urlIn(t) ?: return
             if (url == prefs.getString("lastClip", "")) return
             prefs.edit().putString("lastClip", url).apply()
-            val r = LinkCheck.analyze(url)
+            val r = linkReport(url)
             clipBox.removeAllViews()
             val c = card()
             c.addView(tv("📋  Nusxalangan havola tekshirildi", 14f, true))
@@ -1529,13 +1712,14 @@ class MainActivity : Activity() {
                 status.text = ""
                 if (found != null && t.trim().length <= found.length + 25) {
                     linkInput.setText(found)
-                    showReport(LinkCheck.analyze(found), false)
+                    showReport(linkReport(found), false)
                 } else if (found == null && t.trim().length < 25 && !t.contains(' ')) {
                     linkInput.setText(t.trim())
-                    showReport(LinkCheck.analyze(t.trim()), false)
+                    showReport(linkReport(t.trim()), false)
                 } else {
                     msgInput.setText(t.trim())
-                    showReport(ScamText.analyze(t), false)
+                    lastText = t.trim()
+                    showReport(ScamText.analyze(t, this, null), false)
                 }
                 scrollToResults()
             }
@@ -1602,10 +1786,16 @@ class MainActivity : Activity() {
                     val senderNote = if (src == "Telegram" || src == "WhatsApp") {
                         listOf(Finding(0, "Yuboruvchi kimligini Android ilovaga bermaydi. Chatni ochib, yuboruvchi profili (nomi, raqami) va xabarni skrinshot qilib saqlang"))
                     } else emptyList()
-                    val deep = deep0.copy(
+                    val deep1 = deep0.copy(
                         source = src,
                         findings = listOf(Finding(0, "Fayl manbasi: $src")) + senderNote + deep0.findings
                     )
+                    val deep = if (Blocklist.hasHash(this, sha)) {
+                        deep1.copy(
+                            score = 100,
+                            findings = listOf(Finding(80, "Umumiy xavf bazasida bor: bu fayl xavfli deb belgilangan")) + deep1.findings
+                        )
+                    } else deep1
                     rep = deep
                     val key = prefs.getString("vt", "") ?: ""
                     if (key.isNotBlank()) rep = applyVt(deep, key, sha)
@@ -1669,6 +1859,6 @@ class MainActivity : Activity() {
         }
         results.removeAllViews()
         status.text = ""
-        showReport(LinkCheck.analyze(s), false)
+        showReport(linkReport(s), false)
     }
 }
