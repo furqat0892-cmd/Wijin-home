@@ -1,6 +1,7 @@
 package uz.qoriqchi.pro
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.KeyguardManager
 import android.content.ClipboardManager
@@ -20,14 +21,18 @@ import android.graphics.drawable.RippleDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.LinearInterpolator
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
@@ -54,15 +59,18 @@ class MainActivity : Activity() {
         val bad = 0xFFDC2626.toInt()
     }
 
-    /** Xavfsizlik halqasi: markazda foiz, atrofida ravon yoy. */
+    /** Xavfsizlik halqasi: foiz, ravon to'lish va tekshiruv paytidagi aylanuvchi yoy. */
     private class ScoreRing(
         ctx: Context,
-        private val ratio: Float,
         private val color: Int,
         private val track: Int,
-        private val label: String,
         private val labelColor: Int
     ) : View(ctx) {
+        var ratio = 0f
+        var customLabel: String? = null
+        private var angle = 0f
+        private var spinner: ValueAnimator? = null
+        private var filler: ValueAnimator? = null
         private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
@@ -70,6 +78,48 @@ class MainActivity : Activity() {
         private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textAlign = Paint.Align.CENTER
             typeface = Typeface.DEFAULT_BOLD
+        }
+
+        fun startSpin() {
+            if (spinner != null) return
+            spinner = ValueAnimator.ofFloat(0f, 360f).apply {
+                duration = 1100
+                repeatCount = ValueAnimator.INFINITE
+                interpolator = LinearInterpolator()
+                addUpdateListener {
+                    angle = it.animatedValue as Float
+                    invalidate()
+                }
+                start()
+            }
+        }
+
+        fun stopSpin() {
+            spinner?.cancel()
+            spinner = null
+            invalidate()
+        }
+
+        /** Halqani 0 dan berilgan qiymatgacha ravon to'ldiradi. */
+        fun fillTo(target: Float) {
+            filler?.cancel()
+            filler = ValueAnimator.ofFloat(0f, target).apply {
+                duration = 900
+                interpolator = DecelerateInterpolator()
+                addUpdateListener {
+                    ratio = it.animatedValue as Float
+                    invalidate()
+                }
+                start()
+            }
+        }
+
+        override fun onDetachedFromWindow() {
+            spinner?.cancel()
+            filler?.cancel()
+            spinner = null
+            filler = null
+            super.onDetachedFromWindow()
         }
 
         override fun onDraw(canvas: Canvas) {
@@ -86,8 +136,13 @@ class MainActivity : Activity() {
             arc.color = color
             val sweep = 360f * ratio.coerceIn(0f, 1f)
             if (sweep > 0f) canvas.drawArc(box, -90f, sweep, false, arc)
+            if (spinner != null) {
+                arc.color = (color and 0x00FFFFFF) or 0x66000000
+                canvas.drawArc(box, -90f + angle, 70f, false, arc)
+            }
             txt.color = labelColor
             txt.textSize = side * 0.25f
+            val label = customLabel ?: "${(ratio.coerceIn(0f, 1f) * 100).toInt()}%"
             canvas.drawText(label, w / 2f, h / 2f + txt.textSize * 0.35f, txt)
         }
     }
@@ -106,6 +161,9 @@ class MainActivity : Activity() {
     private lateinit var clipBox: LinearLayout
     private lateinit var lockSwitch: Switch
     private lateinit var summaryBox: LinearLayout
+    private var scanRing: ScoreRing? = null
+    private var scanSub: TextView? = null
+    private var scanBar: ProgressBar? = null
     private var audit: Map<String, List<Pair<String, String>>>? = null
     private var updating = false
     private var started = false
@@ -237,6 +295,43 @@ class MainActivity : Activity() {
             if (stroke != null) setStroke(dp(1), stroke)
         }
 
+    /** a va b ranglarni t (0..1) nisbatda aralashtiradi. */
+    private fun mix(a: Int, b: Int, t: Float): Int {
+        val k = t.coerceIn(0f, 1f)
+        val r = (Color.red(a) * (1 - k) + Color.red(b) * k).toInt()
+        val g = (Color.green(a) * (1 - k) + Color.green(b) * k).toInt()
+        val bl = (Color.blue(a) * (1 - k) + Color.blue(b) * k).toInt()
+        return Color.rgb(r, g, bl)
+    }
+
+    private fun gradBg(c1: Int, c2: Int, radius: Int, stroke: Int): GradientDrawable =
+        GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(c1, c2)).apply {
+            cornerRadius = dp(radius).toFloat()
+            setStroke(dp(1), stroke)
+        }
+
+    /** Rangli ikonka nishoni, sarlavha va izoh. */
+    private fun cardHeader(icon: String, title: String, sub: String, color: Int): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val badge = TextView(this@MainActivity).apply {
+                text = icon
+                textSize = 18f
+                gravity = Gravity.CENTER
+                background = shape(mix(pal.card, color, 0.22f), 12)
+                layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            }
+            val texts = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { leftMargin = dp(12) }
+                addView(tv(title, 16f, true))
+                addView(tv(sub, 12f, false, pal.sub))
+            }
+            addView(badge)
+            addView(texts)
+        }
+
     private fun ripple(content: Drawable): Drawable =
         RippleDrawable(ColorStateList.valueOf(0x33808080), content, null)
 
@@ -284,14 +379,21 @@ class MainActivity : Activity() {
         layoutParams = lp(10)
     }
 
-    private fun tile(icon: String, title: String, sub: String, onClick: () -> Unit): LinearLayout =
+    private fun tile(icon: String, title: String, sub: String, color: Int, onClick: () -> Unit): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(14), dp(14), dp(14))
-            background = ripple(shape(pal.card, 18, pal.line))
+            background = ripple(gradBg(mix(pal.card, color, 0.26f), pal.card, 18, mix(pal.line, color, 0.55f)))
             isClickable = true
             setOnClickListener { onClick() }
-            addView(tv(icon, 26f))
+            val badge = TextView(this@MainActivity).apply {
+                text = icon
+                textSize = 22f
+                gravity = Gravity.CENTER
+                background = shape(color, 14)
+                layoutParams = LinearLayout.LayoutParams(dp(46), dp(46)).apply { bottomMargin = dp(8) }
+            }
+            addView(badge)
             addView(tv(title, 15f, true))
             addView(tv(sub, 12f, false, pal.sub))
         }
@@ -373,8 +475,8 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = lp(12)
         }
-        val t1 = tile("📱", "Ilovalarim", "Hammasini tekshir") { scanInstalled() }
-        val t2 = tile("📦", "APK fayl", "O'rnatishdan oldin") { pickFile() }
+        val t1 = tile("📱", "Ilovalarim", "Hammasini tekshir", 0xFF2563EB.toInt()) { scanInstalled() }
+        val t2 = tile("📦", "APK fayl", "O'rnatishdan oldin", 0xFF7C3AED.toInt()) { pickFile() }
         t1.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { rightMargin = dp(6) }
         t2.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { leftMargin = dp(6) }
         row.addView(t1)
@@ -386,8 +488,7 @@ class MainActivity : Activity() {
 
         // Ruxsatlar auditi
         val auditCard = card()
-        auditCard.addView(tv("🔍  Ruxsatlar auditi", 16f, true))
-        auditCard.addView(tv("Qaysi ilova kamera, mikrofon, joylashuv va boshqalarga kira olishini ko'ring.", 12f, false, pal.sub))
+        auditCard.addView(cardHeader("🔍", "Ruxsatlar auditi", "Qaysi ilova kamera, mikrofon, joylashuv va boshqalarga kira olishini ko'ring.", 0xFFF59E0B.toInt()))
         for (chunk in Scanner.auditGroups.keys.toList().chunked(3)) {
             val r = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -400,25 +501,27 @@ class MainActivity : Activity() {
 
         // Havola
         val linkCard = card()
-        linkCard.addView(tv("🔗  Havola tekshiruvi", 16f, true))
-        linkCard.addView(tv("Havola ochilmaydi, faqat shakli tahlil qilinadi.", 12f, false, pal.sub))
+        linkCard.addView(cardHeader("🔗", "Havola tekshiruvi", "Havola ochilmaydi, faqat shakli tahlil qilinadi.", 0xFF0891B2.toInt()))
         linkInput = field("Havolani shu yerga qo'ying")
         linkInput.inputType = InputType.TYPE_TEXT_VARIATION_URI
         linkCard.addView(linkInput)
-        linkCard.addView(button("Tekshirish", pal.accent) { checkLink() })
+        linkCard.addView(button("Tekshirish", 0xFF0891B2.toInt()) { checkLink() })
         col.addView(linkCard)
 
         // VirusTotal
         val vtCard = card()
-        vtCard.addView(tv("🔑  VirusTotal (ixtiyoriy)", 16f, true))
         vtCard.addView(
-            tv("Kalit kiritilsa, 60+ antivirus bazasi bilan solishtiriladi. Faqat fayl xeshi yuboriladi. Kalitni virustotal.com saytida bepul ro'yxatdan o'tib, profil → API key bo'limidan olasiz.", 12f, false, pal.sub)
+            cardHeader(
+                "🔑", "VirusTotal (ixtiyoriy)",
+                "Kalit kiritilsa, 60+ antivirus bazasi bilan solishtiriladi. Faqat fayl xeshi yuboriladi. Kalitni virustotal.com saytida bepul ro'yxatdan o'tib, profil → API key bo'limidan olasiz.",
+                0xFF4F46E5.toInt()
+            )
         )
         keyInput = field("API kaliti")
         keyInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         keyInput.setText(prefs.getString("vt", ""))
         vtCard.addView(keyInput)
-        vtCard.addView(button("Saqlash", pal.accent) {
+        vtCard.addView(button("Saqlash", 0xFF4F46E5.toInt()) {
             prefs.edit().putString("vt", keyInput.text.toString().trim()).apply()
             toast("Saqlandi")
         })
@@ -433,8 +536,7 @@ class MainActivity : Activity() {
         val lockText = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
-            addView(tv("🔒  Ilovani qulflash", 16f, true))
-            addView(tv("Ochishda telefon ekran qulfi (PIN, barmoq izi) so'raladi.", 12f, false, pal.sub))
+            addView(cardHeader("🔒", "Ilovani qulflash", "Ochishda telefon ekran qulfi (PIN, barmoq izi) so'raladi.", 0xFFDB2777.toInt()))
         }
         lockSwitch = Switch(this)
         lockSwitch.isChecked = prefs.getBoolean("lock", false)
@@ -490,6 +592,13 @@ class MainActivity : Activity() {
                 setPadding(0, dp(18), 0, 0)
             }
         )
+
+        for (i in 0 until col.childCount) {
+            val v = col.getChildAt(i)
+            v.alpha = 0f
+            v.translationY = dp(16).toFloat()
+            v.animate().alpha(1f).translationY(0f).setStartDelay(i * 40L).setDuration(350).start()
+        }
 
         setContentView(root)
     }
@@ -587,7 +696,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(dp(6), dp(12), dp(6), dp(12))
-            background = shape(pal.field, 14, pal.line)
+            background = gradBg(mix(pal.card, color, 0.22f), pal.card, 14, mix(pal.line, color, 0.55f))
             addView(tv("$num", 22f, true, color).apply { gravity = Gravity.CENTER })
             addView(tv(label, 12f, false, pal.sub).apply { gravity = Gravity.CENTER })
             layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply {
@@ -597,12 +706,23 @@ class MainActivity : Activity() {
         }
 
     private fun refreshSummary() {
+        scanRing?.stopSpin()
+        scanRing = null
+        scanSub = null
+        scanBar = null
         summaryBox.removeAllViews()
         val last = prefs.getLong("lastScan", 0L)
         val c = card(14)
         if (last == 0L) {
-            c.addView(tv("Telefoningiz hali tekshirilmagan", 16f, true))
-            c.addView(tv("Bir bosishda barcha o'rnatilgan ilovalarni tekshiring.", 12f, false, pal.sub))
+            c.background = gradBg(mix(pal.card, pal.accent, 0.2f), pal.card, 22, mix(pal.line, pal.accent, 0.5f))
+            val ring = ScoreRing(this, pal.accent, pal.line, pal.ink)
+            ring.customLabel = "🛡️"
+            ring.layoutParams = LinearLayout.LayoutParams(dp(130), dp(130)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+            c.addView(ring)
+            c.addView(tv("Telefoningiz hali tekshirilmagan", 17f, true).apply { gravity = Gravity.CENTER })
+            c.addView(tv("Bir bosishda barcha o'rnatilgan ilovalarni tekshiring.", 12f, false, pal.sub).apply { gravity = Gravity.CENTER })
             c.addView(button("Hozir tekshirish", pal.accent) { scanInstalled() })
         } else {
             val total = prefs.getInt("lastTotal", 0)
@@ -622,12 +742,14 @@ class MainActivity : Activity() {
                 susp > 0 -> "Ba'zi ilovalar e'tibor talab qiladi"
                 else -> "Xavfli belgilar topilmadi"
             }
+            c.background = gradBg(mix(pal.card, tone, 0.28f), pal.card, 22, mix(pal.line, tone, 0.6f))
 
-            val ring = ScoreRing(this, ratio, tone, pal.line, "${(ratio * 100).toInt()}%", pal.ink)
+            val ring = ScoreRing(this, tone, pal.line, pal.ink)
             ring.layoutParams = LinearLayout.LayoutParams(dp(150), dp(150)).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
             }
             c.addView(ring)
+            ring.fillTo(ratio)
             c.addView(tv(title, 17f, true, tone).apply { gravity = Gravity.CENTER })
             val fmt = SimpleDateFormat("dd.MM  HH:mm", Locale.getDefault())
             c.addView(
@@ -643,12 +765,51 @@ class MainActivity : Activity() {
             row.addView(counterTile(susp, "Shubhali", pal.warn))
             row.addView(counterTile(safe, "Toza", pal.good))
             c.addView(row)
+            c.addView(button("Qayta tekshirish", tone) { scanInstalled() })
             c.addView(tv("Bu evristik tekshiruv: \"toza\" degani kafolat emas.", 11f, false, pal.sub).apply {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(8), 0, 0)
             })
         }
         summaryBox.addView(c)
+    }
+
+    /** Tekshiruv paytida: aylanuvchi halqa, joriy ilova nomi va progress chizig'i. */
+    private fun showScanProgress() {
+        scanRing?.stopSpin()
+        summaryBox.removeAllViews()
+        val c = card(14)
+        c.background = gradBg(mix(pal.card, pal.accent, 0.3f), pal.card, 22, mix(pal.line, pal.accent, 0.6f))
+        val ring = ScoreRing(this, pal.accent, pal.line, pal.ink)
+        ring.layoutParams = LinearLayout.LayoutParams(dp(150), dp(150)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        ring.startSpin()
+        c.addView(ring)
+        c.addView(tv("Tekshirilmoqda…", 17f, true, pal.accent).apply { gravity = Gravity.CENTER })
+        val sub = tv("Ilovalar ro'yxati o'qilmoqda", 12f, false, pal.sub).apply { gravity = Gravity.CENTER }
+        c.addView(sub)
+        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            progressTintList = ColorStateList.valueOf(pal.accent)
+            progressBackgroundTintList = ColorStateList.valueOf(pal.line)
+            layoutParams = lp(12)
+        }
+        c.addView(bar)
+        summaryBox.addView(c)
+        scanRing = ring
+        scanSub = sub
+        scanBar = bar
+    }
+
+    private fun updateScanProgress(i: Int, n: Int, name: String) {
+        val ring = scanRing ?: return
+        ring.ratio = if (n > 0) i.toFloat() / n else 0f
+        ring.invalidate()
+        scanSub?.text = "$i / $n  •  $name"
+        scanBar?.max = n
+        scanBar?.progress = i
     }
 
     private fun showAudit(group: String) {
@@ -910,34 +1071,45 @@ class MainActivity : Activity() {
 
     private fun scanInstalled() {
         results.removeAllViews()
-        status.text = "Tekshirilmoqda…"
+        status.text = ""
         status.setTextColor(pal.ink)
+        showScanProgress()
+        val t0 = SystemClock.elapsedRealtime()
         Thread {
             val list = try {
                 val trust = Trust.all(this)
-                Scanner.scanInstalled(this).filter { it.pkg !in trust }
+                Scanner.scanInstalled(this) { i, n, name ->
+                    runOnUiThread { updateScanProgress(i, n, name) }
+                }.filter { it.pkg !in trust }
             } catch (e: Exception) {
                 null
             }
             runOnUiThread {
-                if (list == null) {
-                    status.text = "Ilovalar ro'yxatini olib bo'lmadi."
-                    return@runOnUiThread
-                }
-                val risky = list.filter { it.score >= 25 }
-                prefs.edit()
-                    .putLong("lastScan", System.currentTimeMillis())
-                    .putInt("lastTotal", list.size)
-                    .putInt("lastRisky", risky.size)
-                    .putInt("lastDanger", list.count { it.score >= 50 })
-                    .putInt("lastSusp", list.count { it.score in 25..49 })
-                    .apply()
-                refreshSummary()
-                status.text = "${list.size} ta ilova tekshirildi: ${risky.size} tasi e'tibor talab qiladi."
-                val show = if (risky.isEmpty()) list.take(5) else risky.take(40)
-                show.forEach { showReport(it, true) }
+                // Animatsiya kamida 1,4 soniya ko'rinsin: tekshiruv sezilib tursin
+                val wait = (1400L - (SystemClock.elapsedRealtime() - t0)).coerceAtLeast(0L)
+                summaryBox.postDelayed({ finishScan(list) }, wait)
             }
         }.start()
+    }
+
+    private fun finishScan(list: List<Report>?) {
+        if (list == null) {
+            refreshSummary()
+            status.text = "Ilovalar ro'yxatini olib bo'lmadi."
+            return
+        }
+        val risky = list.filter { it.score >= 25 }
+        prefs.edit()
+            .putLong("lastScan", System.currentTimeMillis())
+            .putInt("lastTotal", list.size)
+            .putInt("lastRisky", risky.size)
+            .putInt("lastDanger", list.count { it.score >= 50 })
+            .putInt("lastSusp", list.count { it.score in 25..49 })
+            .apply()
+        refreshSummary()
+        status.text = "${list.size} ta ilova tekshirildi: ${risky.size} tasi e'tibor talab qiladi."
+        val show = if (risky.isEmpty()) list.take(5) else risky.take(40)
+        show.forEach { showReport(it, true) }
     }
 
     private fun pickFile() {

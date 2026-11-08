@@ -115,12 +115,17 @@ object Scanner {
     }
 
     @Suppress("DEPRECATION")
-    fun scanInstalled(ctx: Context): List<Report> {
+    fun scanInstalled(ctx: Context, onProgress: ((Int, Int, String) -> Unit)? = null): List<Report> {
         val pm = ctx.packageManager
-        return pm.getInstalledPackages(FLAGS)
+        val pkgs = pm.getInstalledPackages(FLAGS)
             .filter { !isSystem(it) && it.packageName != ctx.packageName }
-            .map { analyze(ctx, it, it.applicationInfo?.loadLabel(pm)?.toString() ?: it.packageName, false, null) }
-            .sortedByDescending { it.score }
+        val out = ArrayList<Report>(pkgs.size)
+        for ((i, p) in pkgs.withIndex()) {
+            val label = p.applicationInfo?.loadLabel(pm)?.toString() ?: p.packageName
+            onProgress?.invoke(i + 1, pkgs.size, label)
+            out.add(analyze(ctx, p, label, false, null))
+        }
+        return out.sortedByDescending { it.score }
     }
 
     val auditGroups: Map<String, List<String>> = linkedMapOf(
