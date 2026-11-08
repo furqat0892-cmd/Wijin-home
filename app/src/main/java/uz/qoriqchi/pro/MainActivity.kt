@@ -69,8 +69,11 @@ class MainActivity : Activity() {
         var ratio = 0f
         var customLabel: String? = null
         private var angle = 0f
-        private var spinner: ValueAnimator? = null
-        private var filler: ValueAnimator? = null
+        private var spinning = false
+        private var spinStart = 0L
+        private var filling = false
+        private var fillStart = 0L
+        private var fillTarget = 0f
         private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
@@ -80,49 +83,43 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
         }
 
+        // Vaqtga asoslangan chizish: tizimdagi "animatsiya o'chirilgan" / quvvat tejash
+        // sozlamasi ta'sir qilmaydi.
         fun startSpin() {
-            if (spinner != null) return
-            spinner = ValueAnimator.ofFloat(0f, 360f).apply {
-                duration = 1100
-                repeatCount = ValueAnimator.INFINITE
-                interpolator = LinearInterpolator()
-                addUpdateListener {
-                    angle = it.animatedValue as Float
-                    invalidate()
-                }
-                start()
-            }
+            if (spinning) return
+            spinning = true
+            spinStart = SystemClock.uptimeMillis()
+            postInvalidateOnAnimation()
         }
 
         fun stopSpin() {
-            spinner?.cancel()
-            spinner = null
+            spinning = false
             invalidate()
         }
 
         /** Halqani 0 dan berilgan qiymatgacha ravon to'ldiradi. */
         fun fillTo(target: Float) {
-            filler?.cancel()
-            filler = ValueAnimator.ofFloat(0f, target).apply {
-                duration = 900
-                interpolator = DecelerateInterpolator()
-                addUpdateListener {
-                    ratio = it.animatedValue as Float
-                    invalidate()
-                }
-                start()
-            }
+            fillTarget = target
+            fillStart = SystemClock.uptimeMillis()
+            filling = true
+            ratio = 0f
+            postInvalidateOnAnimation()
         }
 
         override fun onDetachedFromWindow() {
-            spinner?.cancel()
-            filler?.cancel()
-            spinner = null
-            filler = null
+            spinning = false
+            filling = false
             super.onDetachedFromWindow()
         }
 
         override fun onDraw(canvas: Canvas) {
+            val now = SystemClock.uptimeMillis()
+            if (spinning) angle = ((now - spinStart) % 1100L) / 1100f * 360f
+            if (filling) {
+                val t = ((now - fillStart) / 900f).coerceIn(0f, 1f)
+                ratio = fillTarget * (1f - (1f - t) * (1f - t))
+                if (t >= 1f) filling = false
+            }
             val w = width.toFloat()
             val h = height.toFloat()
             val side = minOf(w, h)
@@ -136,14 +133,15 @@ class MainActivity : Activity() {
             arc.color = color
             val sweep = 360f * ratio.coerceIn(0f, 1f)
             if (sweep > 0f) canvas.drawArc(box, -90f, sweep, false, arc)
-            if (spinner != null) {
-                arc.color = (color and 0x00FFFFFF) or 0x66000000
-                canvas.drawArc(box, -90f + angle, 70f, false, arc)
+            if (spinning) {
+                arc.color = color
+                canvas.drawArc(box, -90f + angle, 100f, false, arc)
             }
             txt.color = labelColor
             txt.textSize = side * 0.25f
             val label = customLabel ?: "${(ratio.coerceIn(0f, 1f) * 100).toInt()}%"
             canvas.drawText(label, w / 2f, h / 2f + txt.textSize * 0.35f, txt)
+            if (spinning || filling) postInvalidateOnAnimation()
         }
     }
 
@@ -164,6 +162,10 @@ class MainActivity : Activity() {
     private var scanRing: ScoreRing? = null
     private var scanSub: TextView? = null
     private var scanBar: ProgressBar? = null
+    private var scanRadar: RadarView? = null
+    private var scrollRoot: ScrollView? = null
+    private lateinit var msgInput: EditText
+    private lateinit var msgCard: View
     private var audit: Map<String, List<Pair<String, String>>>? = null
     private var updating = false
     private var started = false
@@ -400,6 +402,315 @@ class MainActivity : Activity() {
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
 
+    private fun tileRow(a: LinearLayout, b: LinearLayout): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = lp(12)
+        }
+        a.layoutParams = LinearLayout.LayoutParams(0, MATCH, 1f).apply { rightMargin = dp(6) }
+        b.layoutParams = LinearLayout.LayoutParams(0, MATCH, 1f).apply { leftMargin = dp(6) }
+        row.addView(a)
+        row.addView(b)
+        return row
+    }
+
+    /** Natijalar ko'rinadigan joyga sahifani suradi. */
+    private fun scrollToResults() {
+        val sv = scrollRoot ?: return
+        sv.post { sv.smoothScrollTo(0, (status.top - dp(8)).coerceAtLeast(0)) }
+    }
+
+    private fun focusMessage() {
+        val sv = scrollRoot ?: return
+        sv.post { sv.smoothScrollTo(0, (msgCard.top - dp(8)).coerceAtLeast(0)) }
+        msgInput.requestFocus()
+    }
+
+    private fun openSettings(action: String) {
+        try {
+            startActivity(Intent(action))
+        } catch (e: Exception) {
+            toast("Sozlamani ochib bo'lmadi")
+        }
+    }
+
+    private fun stateColor(state: Int): Int = when (state) {
+        0 -> pal.good
+        1 -> pal.warn
+        2 -> pal.bad
+        else -> pal.sub
+    }
+
+    private fun stateIcon(state: Int): String = when (state) {
+        0 -> "✅"
+        1 -> "⚠️"
+        2 -> "⛔"
+        else -> "❔"
+    }
+
+    // ---------- Telefon sog'lig'i ----------
+
+    private fun showHealth() {
+        results.removeAllViews()
+        status.text = "Telefon sog'lig'i tekshirilmoqda…"
+        status.setTextColor(pal.ink)
+        scrollToResults()
+        Thread {
+            val h = try {
+                PhoneHealth.run(this)
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                if (h == null) {
+                    status.text = "Tekshirib bo'lmadi."
+                    return@runOnUiThread
+                }
+                status.text = ""
+                renderHealth(h)
+            }
+        }.start()
+    }
+
+    private fun renderHealth(h: HealthResult) {
+        results.removeAllViews()
+        val tone = when {
+            h.score >= 80 -> pal.good
+            h.score >= 55 -> pal.warn
+            else -> pal.bad
+        }
+        val head = card(0)
+        head.background = gradBg(mix(pal.card, tone, 0.28f), pal.card, 22, mix(pal.line, tone, 0.6f))
+        val ring = ScoreRing(this, tone, pal.line, pal.ink)
+        ring.customLabel = "${h.score}"
+        ring.layoutParams = LinearLayout.LayoutParams(dp(130), dp(130)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        head.addView(ring)
+        ring.fillTo(h.score / 100f)
+        val title = when {
+            h.score >= 80 -> "Telefoningiz yaxshi himoyalangan"
+            h.score >= 55 -> "Bir necha joyni tuzatish kerak"
+            else -> "Telefon himoyasi zaif"
+        }
+        head.addView(tv(title, 17f, true, tone).apply { gravity = Gravity.CENTER })
+        head.addView(tv("Telefon sozlamalari bo'yicha ball: ${h.score} / 100", 12f, false, pal.sub).apply { gravity = Gravity.CENTER })
+        results.addView(head)
+
+        // Avval muammolar, keyin yaxshilari
+        val sorted = h.checks.sortedWith(compareBy<HealthCheck> { if (it.state == 0) 1 else 0 })
+        for (c in sorted) {
+            val col = stateColor(c.state)
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                background = shape(pal.card, 16, mix(pal.line, col, 0.5f))
+                layoutParams = lp(10)
+            }
+            box.addView(tv(stateIcon(c.state) + "  " + c.title, 15f, true, if (c.state == 0) pal.ink else col))
+            box.addView(tv(c.detail, 13f, false, pal.sub))
+            val fix = c.fix
+            if (fix != null && (c.state == 1 || c.state == 2)) {
+                val r = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutParams = lp(8)
+                }
+                r.addView(smallBtn("Sozlamani ochish") { openSettings(fix) })
+                box.addView(r)
+            }
+            results.addView(box)
+        }
+        results.addView(tv("Bu tekshiruv telefon sozlamalariga qaraydi. Zararli ilova bo'lmasligiga kafolat emas.", 11f, false, pal.sub).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, 0)
+        })
+    }
+
+    // ---------- Ilova kelib chiqishi ----------
+
+    private fun showOrigin() {
+        results.removeAllViews()
+        status.text = "Ilovalar manbasi aniqlanmoqda…"
+        status.setTextColor(pal.ink)
+        scrollToResults()
+        Thread {
+            val list = try {
+                Origin.list(this)
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                if (list == null) {
+                    status.text = "Ro'yxatni olib bo'lmadi."
+                    return@runOnUiThread
+                }
+                status.text = ""
+                renderOrigin(list)
+            }
+        }.start()
+    }
+
+    private fun renderOrigin(list: List<AppOrigin>) {
+        results.removeAllViews()
+        val store = list.count { it.kind == 0 }
+        val manual = list.count { it.kind == 1 }
+        val unknown = list.count { it.kind == 2 }
+        val head = card(0)
+        head.addView(cardHeader("🧭", "Ilovalar qayerdan kelgan", "Do'kondan tashqari o'rnatilgan ilovalar xavfliroq: ularni kim o'rnatganini bilib qo'ying.", 0xFF0EA5E9.toInt()))
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = lp(12)
+        }
+        row.addView(counterTile(store, "Do'kondan", pal.good))
+        row.addView(counterTile(manual, "APK orqali", pal.warn))
+        row.addView(counterTile(unknown, "Noma'lum", pal.bad))
+        head.addView(row)
+        results.addView(head)
+
+        val shown = list.filter { it.kind != 0 }
+        if (shown.isEmpty()) {
+            results.addView(card().apply {
+                addView(tv("Hamma ilova rasmiy do'kondan o'rnatilgan. Yaxshi holat.", 14f, true, pal.good))
+            })
+            return
+        }
+        val fmt = SimpleDateFormat("dd.MM.yyyy", Locale.getDefault())
+        val week = System.currentTimeMillis() - 7L * 24 * 3600 * 1000
+        for (a in shown.take(60)) {
+            val col = if (a.kind == 1) pal.warn else pal.bad
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                background = shape(pal.card, 16, mix(pal.line, col, 0.5f))
+                layoutParams = lp(10)
+            }
+            val fresh = if (a.installedAt >= week) "  🆕" else ""
+            box.addView(tv(a.label + fresh, 15f, true))
+            box.addView(tv(a.via, 13f, true, col))
+            box.addView(tv("O'rnatilgan: ${fmt.format(Date(a.installedAt))}  •  ${a.pkg}", 11f, false, pal.sub))
+            val r = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = lp(8)
+            }
+            r.addView(smallBtn("Tekshirish") { checkOriginApp(a, box) })
+            r.addView(smallBtn("Karantin") {
+                Quarantine.add(this, a.pkg)
+                toast("Karantinga qo'shildi")
+            })
+            r.addView(smallBtn("O'chirish") {
+                startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:${a.pkg}")))
+            })
+            box.addView(r)
+            results.addView(box)
+        }
+    }
+
+    private fun checkOriginApp(a: AppOrigin, box: View) {
+        toast("Tekshirilmoqda…")
+        Thread {
+            val rep = try {
+                Scanner.analyzePackage(this, a.pkg)
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                if (rep == null) {
+                    toast("Ilovani tekshirib bo'lmadi")
+                    return@runOnUiThread
+                }
+                val idx = results.indexOfChild(box)
+                if (idx >= 0) {
+                    results.removeViewAt(idx)
+                    showReport(rep, true, idx)
+                }
+            }
+        }.start()
+    }
+
+    // ---------- Karantin ----------
+
+    private fun showQuarantine() {
+        results.removeAllViews()
+        status.text = ""
+        renderQuarantine()
+        scrollToResults()
+    }
+
+    private fun renderQuarantine() {
+        results.removeAllViews()
+        val list = Quarantine.active(this)
+        val head = card(0)
+        head.addView(cardHeader("🧪", "Karantin", "Shubhali ilovalar shu yerda yig'ib qo'yiladi: ruxsatlarini olib, keyin o'chirasiz.", 0xFFE11D48.toInt()))
+        head.addView(
+            tv(
+                "Eslatma: Android boshqa ilovani o'chirmasdan bloklashga ruxsat bermaydi. Karantin ro'yxat tutadi va ilovaning xavfli ruxsatlarini ko'rsatadi, ularni olib tashlash yoki ilovani o'chirish o'zingizning tasdig'ingiz bilan bo'ladi.",
+                12f, false, pal.sub
+            )
+        )
+        results.addView(head)
+        if (list.isEmpty()) {
+            results.addView(card().apply {
+                addView(tv("Karantin bo'sh.", 15f, true))
+                addView(tv("Ilova hisobotidagi «Karantin» tugmasi yoki «Kelib chiqishi» ro'yxati orqali ilova qo'shiladi.", 12f, false, pal.sub))
+            })
+            return
+        }
+        val pm = packageManager
+        for (pkg in list) {
+            val label = try {
+                pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString()
+            } catch (e: Exception) {
+                pkg
+            }
+            val granted = Quarantine.grantedRisky(this, pkg)
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                background = shape(pal.card, 16, mix(pal.line, 0xFFE11D48.toInt(), 0.5f))
+                layoutParams = lp(10)
+            }
+            box.addView(tv("🧪  $label", 15f, true))
+            box.addView(tv(pkg, 11f, false, pal.sub))
+            if (granted.isEmpty()) {
+                box.addView(tv("Hozir berilgan xavfli ruxsat yo'q.", 13f, false, pal.good))
+            } else {
+                box.addView(tv("Berilgan ruxsatlar: " + granted.joinToString(", "), 13f, true, pal.bad))
+            }
+            val r = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = lp(8)
+            }
+            r.addView(smallBtn("Ruxsatlarni olish") {
+                startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$pkg"))
+                )
+            })
+            r.addView(smallBtn("O'chirish") {
+                startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:$pkg")))
+            })
+            r.addView(smallBtn("Chiqarish") {
+                Quarantine.remove(this, pkg)
+                renderQuarantine()
+            })
+            box.addView(r)
+            results.addView(box)
+        }
+    }
+
+    // ---------- Xabar matni ----------
+
+    private fun checkMessage() {
+        val t = msgInput.text.toString().trim()
+        if (t.isEmpty()) {
+            toast("Xabar matnini kiriting")
+            return
+        }
+        results.removeAllViews()
+        status.text = ""
+        showReport(ScamText.analyze(t), false)
+        scrollToResults()
+    }
+
     // ---------- Asosiy ekran ----------
 
     private fun buildUi() {
@@ -407,6 +718,7 @@ class MainActivity : Activity() {
             setBackgroundColor(pal.bg)
             isFillViewport = true
         }
+        scrollRoot = root
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(26), dp(16), dp(32))
@@ -471,17 +783,24 @@ class MainActivity : Activity() {
         col.addView(guardCard)
 
         // Amallar
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = lp(12)
-        }
-        val t1 = tile("📱", "Ilovalarim", "Hammasini tekshir", 0xFF2563EB.toInt()) { scanInstalled() }
-        val t2 = tile("📦", "APK fayl", "O'rnatishdan oldin", 0xFF7C3AED.toInt()) { pickFile() }
-        t1.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { rightMargin = dp(6) }
-        t2.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { leftMargin = dp(6) }
-        row.addView(t1)
-        row.addView(t2)
-        col.addView(row)
+        col.addView(
+            tileRow(
+                tile("📱", "Ilovalarim", "Hammasini tekshir", 0xFF2563EB.toInt()) { scanInstalled() },
+                tile("📦", "APK fayl", "O'rnatishdan oldin", 0xFF7C3AED.toInt()) { pickFile() }
+            )
+        )
+        col.addView(
+            tileRow(
+                tile("🩺", "Telefon sog'lig'i", "Qulf, yangilanish, xavfli ruxsatlar", 0xFF16A34A.toInt()) { showHealth() },
+                tile("💬", "Xabar tekshiruvi", "SMS yoki Telegram matni", 0xFFEA580C.toInt()) { focusMessage() }
+            )
+        )
+        col.addView(
+            tileRow(
+                tile("🧭", "Kelib chiqishi", "Ilovani kim o'rnatgan", 0xFF0EA5E9.toInt()) { showOrigin() },
+                tile("🧪", "Karantin", "Shubhali ilovalar ro'yxati", 0xFFE11D48.toInt()) { showQuarantine() }
+            )
+        )
 
         clipBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(clipBox)
@@ -507,6 +826,20 @@ class MainActivity : Activity() {
         linkCard.addView(linkInput)
         linkCard.addView(button("Tekshirish", 0xFF0891B2.toInt()) { checkLink() })
         col.addView(linkCard)
+
+        // Xabar matni
+        val msgBox = card()
+        msgCard = msgBox
+        msgBox.addView(cardHeader("💬", "Firibgar xabar tekshiruvi", "Shubhali SMS yoki Telegram xabarini qo'ying: firibgarlik belgilari topiladi. Matn telefondan chiqmaydi.", 0xFFEA580C.toInt()))
+        msgInput = field("Xabar matnini shu yerga qo'ying")
+        msgInput.setSingleLine(false)
+        msgInput.minLines = 3
+        msgInput.maxLines = 8
+        msgInput.gravity = Gravity.TOP or Gravity.START
+        msgInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        msgBox.addView(msgInput)
+        msgBox.addView(button("Xabarni tekshirish", 0xFFEA580C.toInt()) { checkMessage() })
+        col.addView(msgBox)
 
         // VirusTotal
         val vtCard = card()
@@ -708,6 +1041,8 @@ class MainActivity : Activity() {
     private fun refreshSummary() {
         scanRing?.stopSpin()
         scanRing = null
+        scanRadar?.stop()
+        scanRadar = null
         scanSub = null
         scanBar = null
         summaryBox.removeAllViews()
@@ -777,15 +1112,16 @@ class MainActivity : Activity() {
     /** Tekshiruv paytida: aylanuvchi halqa, joriy ilova nomi va progress chizig'i. */
     private fun showScanProgress() {
         scanRing?.stopSpin()
+        scanRadar?.stop()
         summaryBox.removeAllViews()
         val c = card(14)
         c.background = gradBg(mix(pal.card, pal.accent, 0.3f), pal.card, 22, mix(pal.line, pal.accent, 0.6f))
-        val ring = ScoreRing(this, pal.accent, pal.line, pal.ink)
-        ring.layoutParams = LinearLayout.LayoutParams(dp(150), dp(150)).apply {
+        val radar = RadarView(this, pal.accent, pal.line)
+        radar.layoutParams = LinearLayout.LayoutParams(dp(210), dp(210)).apply {
             gravity = Gravity.CENTER_HORIZONTAL
         }
-        ring.startSpin()
-        c.addView(ring)
+        radar.start()
+        c.addView(radar)
         c.addView(tv("Tekshirilmoqda…", 17f, true, pal.accent).apply { gravity = Gravity.CENTER })
         val sub = tv("Ilovalar ro'yxati o'qilmoqda", 12f, false, pal.sub).apply { gravity = Gravity.CENTER }
         c.addView(sub)
@@ -798,15 +1134,15 @@ class MainActivity : Activity() {
         }
         c.addView(bar)
         summaryBox.addView(c)
-        scanRing = ring
+        scanRing = null
+        scanRadar = radar
         scanSub = sub
         scanBar = bar
     }
 
     private fun updateScanProgress(i: Int, n: Int, name: String) {
-        val ring = scanRing ?: return
-        ring.ratio = if (n > 0) i.toFloat() / n else 0f
-        ring.invalidate()
+        val radar = scanRadar ?: return
+        radar.addBlip(name)
         scanSub?.text = "$i / $n  •  $name"
         scanBar?.max = n
         scanBar?.progress = i
@@ -949,6 +1285,16 @@ class MainActivity : Activity() {
     /** Oddiy tilda "endi nima qilay?" maslahati. */
     private fun adviceFor(r: Report, installed: Boolean): String {
         val hot = r.level == Level.CRITICAL || r.level == Level.HIGH
+        if (r.pkg == "matn") {
+            return when {
+                hot ->
+                    "Nima qilish kerak: xabarga javob bermang va havolani ochmang. SMS-kod, karta raqami va parolni HECH KIMGA aytmang: haqiqiy bank xodimi ham so'ramaydi. Raqamni bloklang."
+                r.level == Level.MEDIUM ->
+                    "Nima qilish kerak: ehtiyot bo'ling. Xabardagi raqam yoki havoladan foydalanmang, bank yoki idorani rasmiy raqami/ilovasi orqali o'zingiz tekshiring."
+                else ->
+                    "Aniq firibgarlik belgisi topilmadi. Baribir kod yoki karta ma'lumotini hech kimga bermang."
+            }
+        }
         val isFile = !installed && r.sha256 != null
         return when {
             isFile && hot ->
@@ -1053,6 +1399,16 @@ class MainActivity : Activity() {
             })
             row2.addView(smallBtn("Ulashish") { share(r) })
             c.addView(row2)
+
+            val row3 = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = lp(6)
+            }
+            row3.addView(smallBtn("Karantin") {
+                Quarantine.add(this, r.pkg)
+                toast("Karantinga qo'shildi")
+            })
+            c.addView(row3)
         } else {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -1085,8 +1441,8 @@ class MainActivity : Activity() {
                 null
             }
             runOnUiThread {
-                // Animatsiya kamida 1,4 soniya ko'rinsin: tekshiruv sezilib tursin
-                val wait = (1400L - (SystemClock.elapsedRealtime() - t0)).coerceAtLeast(0L)
+                // Animatsiya kamida 2,6 soniya ko'rinsin: tekshiruv sezilib tursin
+                val wait = (2600L - (SystemClock.elapsedRealtime() - t0)).coerceAtLeast(0L)
                 summaryBox.postDelayed({ finishScan(list) }, wait)
             }
         }.start()
@@ -1166,13 +1522,22 @@ class MainActivity : Activity() {
         if (i == null) return
         if (i.action == Intent.ACTION_SEND && i.type?.startsWith("text/") == true) {
             val t = i.getStringExtra(Intent.EXTRA_TEXT)
-            val u = if (t == null) null else (urlIn(t) ?: t.trim())
-            if (u != null && u.isNotEmpty()) {
+            if (t != null && t.trim().isNotEmpty()) {
                 setIntent(Intent())
-                linkInput.setText(u)
+                val found = urlIn(t)
                 results.removeAllViews()
                 status.text = ""
-                showReport(LinkCheck.analyze(u), false)
+                if (found != null && t.trim().length <= found.length + 25) {
+                    linkInput.setText(found)
+                    showReport(LinkCheck.analyze(found), false)
+                } else if (found == null && t.trim().length < 25 && !t.contains(' ')) {
+                    linkInput.setText(t.trim())
+                    showReport(LinkCheck.analyze(t.trim()), false)
+                } else {
+                    msgInput.setText(t.trim())
+                    showReport(ScamText.analyze(t), false)
+                }
+                scrollToResults()
             }
             return
         }
