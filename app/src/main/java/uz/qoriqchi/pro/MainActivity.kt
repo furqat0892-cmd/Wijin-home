@@ -980,6 +980,93 @@ class MainActivity : Activity() {
 
     // ---------- Asosiy ekran ----------
 
+    private var panels: List<LinearLayout> = emptyList()
+    private var tabBtns: List<LinearLayout> = emptyList()
+    private var evWrap: View? = null
+
+    private fun panel(): LinearLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+    /** Qalqonlar kartasidagi bitta qator: sarlavha, holat, tugma va yig'ib qo'yiladigan batafsil qism. */
+    private fun shieldRow(parent: LinearLayout, title: String, status: TextView, btn: TextView?, detail: View?) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = shape(pal.bg, 14, pal.line)
+            layoutParams = lp(10)
+        }
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val t = tv(title, 14f, true)
+        t.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        top.addView(t)
+        if (detail != null) {
+            val more = tv("Batafsil", 12f, true, pal.accent)
+            more.setPadding(dp(8), dp(4), 0, dp(4))
+            more.setOnClickListener {
+                detail.visibility = if (detail.visibility == View.GONE) View.VISIBLE else View.GONE
+            }
+            top.addView(more)
+        }
+        box.addView(top)
+        status.layoutParams = lp(4)
+        box.addView(status)
+        if (btn != null) box.addView(btn)
+        if (detail != null) {
+            detail.visibility = View.GONE
+            box.addView(detail)
+        }
+        parent.addView(box)
+    }
+
+    private fun selectTab(i: Int, clear: Boolean = true) {
+        if (panels.isEmpty()) return
+        for ((k, p) in panels.withIndex()) p.visibility = if (k == i) View.VISIBLE else View.GONE
+        for ((k, b) in tabBtns.withIndex()) {
+            val on = k == i
+            val ic = b.getChildAt(0) as TextView
+            val lb = b.getChildAt(1) as TextView
+            ic.alpha = if (on) 1f else 0.55f
+            lb.setTextColor(if (on) pal.accent else pal.sub)
+            b.background = if (on) shape(mix(pal.card, pal.accent, 0.16f), 14) else null
+        }
+        evWrap?.visibility = if (i == 0) View.VISIBLE else View.GONE
+        if (clear) {
+            results.removeAllViews()
+            status.text = ""
+        }
+        scrollRoot?.post { scrollRoot?.scrollTo(0, 0) }
+        val p = panels[i]
+        for (j in 0 until p.childCount) {
+            val v = p.getChildAt(j)
+            v.alpha = 0f
+            v.translationY = dp(12).toFloat()
+            v.animate().alpha(1f).translationY(0f).setStartDelay(j * 30L).setDuration(260).start()
+        }
+    }
+
+    /** Bitta maydon: havola bo'lsa havola tekshiriladi, aks holda xabar matni. */
+    private fun checkSmart() {
+        val t = msgInput.text.toString().trim()
+        if (t.isEmpty()) {
+            toast("Havola yoki xabar matnini kiriting")
+            return
+        }
+        val found = urlIn(t)
+        results.removeAllViews()
+        status.text = ""
+        val onlyLink = (found != null && t.length <= found.length + 25) ||
+            (found == null && t.length < 25 && !t.contains(' '))
+        if (onlyLink) {
+            showReport(linkReport(found ?: t), false)
+        } else {
+            lastText = t
+            showReport(ScamText.analyze(t, this, null), false)
+        }
+        scrollToResults()
+    }
+
     private fun buildUi() {
         val root = ScrollView(this).apply {
             setBackgroundColor(pal.bg)
@@ -988,7 +1075,7 @@ class MainActivity : Activity() {
         scrollRoot = root
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(26), dp(16), dp(32))
+            setPadding(dp(16), dp(26), dp(16), dp(24))
         }
         root.addView(col)
 
@@ -1017,10 +1104,18 @@ class MainActivity : Activity() {
         head.addView(titles)
         col.addView(head)
 
-        summaryBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(summaryBox)
+        val p0 = panel()
+        val p1 = panel()
+        val p2 = panel()
+        val p3 = panel()
+        panels = listOf(p0, p1, p2, p3)
+        for (p in panels) col.addView(p)
 
-        // Real vaqt himoyasi kartochkasi
+        // =================== 1-bo'lim: HIMOYA ===================
+        summaryBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        p0.addView(summaryBox)
+
+        // Fon himoyasi
         guardCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(16), dp(18), dp(16))
@@ -1047,21 +1142,20 @@ class MainActivity : Activity() {
         guardCard.addView(grow)
         permBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         guardCard.addView(permBox)
-        col.addView(guardCard)
+        p0.addView(guardCard)
 
-        // Xabar qalqoni
-        val shield = card()
-        shield.addView(cardHeader("🛡️", "Xabar qalqoni", "SMS yoki Telegram'dan firibgar xabar kelsa, darrov ogohlantiradi. Matn telefondan chiqmaydi va saqlanmaydi.", 0xFF16A34A.toInt()))
+        // Qalqonlar: xabar, qo'ng'iroq, tarmoq (bitta kartada)
+        val shields = card()
+        shields.addView(cardHeader("🛡️", "Qalqonlar", "Kelayotgan xabar, qo'ng'iroq va tarmoq ulanishlarini real vaqtda tekshiradi.", 0xFF16A34A.toInt()))
+
         shieldStatus = tv("", 13f, true)
-        shieldStatus.layoutParams = lp(8)
-        shield.addView(shieldStatus)
         shieldBtn = button("Ruxsat berish", 0xFF16A34A.toInt()) {
             openSettings("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
         }
-        shield.addView(shieldBtn)
-        shield.addView(
+        val msgDetail = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        msgDetail.addView(
             tv(
-                "Ruxsat tugmasi kulrang bo'lib, bosilmasa: Sozlamalar → Ilovalar → Qo'riqchi Pro → yuqori o'ngdagi ⋮ → «Cheklangan sozlamalarga ruxsat berish». Keyin qaytib, ruxsat bering.",
+                "SMS, Telegram, WhatsApp va boshqa xabarlar firibgarlikka tekshiriladi. Matn telefondan chiqmaydi va saqlanmaydi. Ruxsat tugmasi kulrang bo'lib, bosilmasa: Sozlamalar → Ilovalar → Qo'riqchi Pro → yuqori o'ngdagi ⋮ → «Cheklangan sozlamalarga ruxsat berish». Keyin qaytib, ruxsat bering.",
                 11f, false, pal.sub
             ).apply { layoutParams = lp(8) }
         )
@@ -1072,33 +1166,93 @@ class MainActivity : Activity() {
         shRow.addView(smallBtn("Ilova sozlamalari") {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
         })
-        shield.addView(shRow)
-        col.addView(shield)
+        msgDetail.addView(shRow)
+        shieldRow(shields, "💬 Xabar qalqoni", shieldStatus, shieldBtn, msgDetail)
 
-        // Amallar
-        col.addView(
+        callStatus = tv("", 13f, true)
+        callBtn = button("Qalqonni yoqish", 0xFFF43F5E.toInt()) { requestCallRole() }
+        val callDetail = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        callDetail.addView(
+            tv(
+                "Xavf bazasidagi yoki o'zingiz qo'shgan raqamdan qo'ng'iroq kelsa, ogohlantiradi yoki rad etadi. Raqam qo'shish: «Sozlamalar» bo'limi → Xavf bazasi.",
+                11f, false, pal.sub
+            ).apply { layoutParams = lp(8) }
+        )
+        val rej = Switch(this)
+        rej.text = "Bazadagi raqamni avtomatik rad etish"
+        rej.setTextColor(pal.ink)
+        rej.isChecked = prefs.getBoolean("call_reject", false)
+        rej.setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("call_reject", on).apply() }
+        rej.layoutParams = lp(10)
+        callDetail.addView(rej)
+        callDetail.addView(
+            tv(
+                "Yoqilmasa: Sozlamalar → Ilovalar → Standart ilovalar → «Qo'ng'iroqlarni aniqlash va spamdan himoya» ichidan Qo'riqchi Pro ni tanlang.",
+                11f, false, pal.sub
+            ).apply { layoutParams = lp(8) }
+        )
+        shieldRow(shields, "📞 Qo'ng'iroq qalqoni", callStatus, callBtn, callDetail)
+
+        netStatus = tv("", 13f, true)
+        netBtn = button("Nazoratni yoqish", 0xFF0EA5E9.toInt()) { toggleNet() }
+        val netDetail = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        netDetail.addView(
+            tv(
+                "Ilovalar qaysi manzillarga ulanayotganini ko'radi va xavfli manzillarni to'sadi. Faqat manzil nomlari ko'riladi, ma'lumotingiz o'qilmaydi. «Shaxsiy DNS» (Private DNS) yoqilgan bo'lsa, nazorat ishlamaydi. Yoqilganda tepada VPN belgisi (kalit) ko'rinadi, bu normal.",
+                11f, false, pal.sub
+            ).apply { layoutParams = lp(8) }
+        )
+        val netRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = lp(8)
+        }
+        netRow.addView(smallBtn("So'nggi ulanishlar") { showNet() })
+        netDetail.addView(netRow)
+        shieldRow(shields, "🛰️ Tarmoq nazorati", netStatus, netBtn, netDetail)
+        p0.addView(shields)
+
+        // =================== 2-bo'lim: TEKSHIRISH ===================
+        p1.addView(
             tileRow(
                 tile("📱", "Ilovalarim", "Hammasini tekshir", 0xFF2563EB.toInt()) { scanInstalled() },
                 tile("📦", "APK fayl", "O'rnatishdan oldin", 0xFF7C3AED.toInt()) { pickFile() }
             )
         )
-        col.addView(
-            tileRow(
-                tile("🩺", "Telefon sog'lig'i", "Qulf, yangilanish, xavfli ruxsatlar", 0xFF16A34A.toInt()) { showHealth() },
-                tile("💬", "Xabar tekshiruvi", "SMS yoki Telegram matni", 0xFFEA580C.toInt()) { focusMessage() }
-            )
-        )
-        col.addView(
-            tileRow(
-                tile("🧭", "Kelib chiqishi", "Ilovani kim o'rnatgan", 0xFF0EA5E9.toInt()) { showOrigin() },
-                tile("🧪", "Karantin", "Shubhali ilovalar ro'yxati", 0xFFE11D48.toInt()) { showQuarantine() }
-            )
-        )
+
+        val smart = card()
+        msgCard = smart
+        smart.addView(cardHeader("🔎", "Havola yoki xabar tekshiruvi", "Shubhali havola yoki SMS/Telegram xabarini qo'ying. Havola ochilmaydi, matn telefondan chiqmaydi.", 0xFF0891B2.toInt()))
+        msgInput = field("Havola yoki xabar matnini shu yerga qo'ying")
+        msgInput.setSingleLine(false)
+        msgInput.minLines = 3
+        msgInput.maxLines = 8
+        msgInput.gravity = Gravity.TOP or Gravity.START
+        msgInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        linkInput = msgInput
+        smart.addView(msgInput)
+        smart.addView(button("Tekshirish", 0xFF0891B2.toInt()) { checkSmart() })
+        p1.addView(smart)
 
         clipBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(clipBox)
+        p1.addView(clipBox)
 
-        // Ruxsatlar auditi
+        // =================== 3-bo'lim: TELEFON ===================
+        p2.addView(
+            tileRow(
+                tile("🩺", "Telefon sog'lig'i", "Qulf, yangilanish, xavfli ruxsatlar", 0xFF16A34A.toInt()) { showHealth() },
+                tile("🧭", "Kelib chiqishi", "Ilovani kim o'rnatgan", 0xFF0EA5E9.toInt()) { showOrigin() }
+            )
+        )
+        p2.addView(
+            tileRow(
+                tile("🧪", "Karantin", "Shubhali ilovalar ro'yxati", 0xFFE11D48.toInt()) { showQuarantine() },
+                tile("🔁", "Ruxsat o'zgarishi", "Yangi xavfli ruxsatlar kuzatuvi", 0xFF14B8A6.toInt()) { runPermWatch() }
+            )
+        )
+        pwInfo = tv(PermWatch.info(this), 11f, false, pal.sub)
+        pwInfo.layoutParams = lp(0)
+        p2.addView(pwInfo)
+
         val auditCard = card()
         auditCard.addView(cardHeader("🔍", "Ruxsatlar auditi", "Qaysi ilova kamera, mikrofon, joylashuv va boshqalarga kira olishini ko'ring.", 0xFFF59E0B.toInt()))
         for (chunk in Scanner.auditGroups.keys.toList().chunked(3)) {
@@ -1109,31 +1263,9 @@ class MainActivity : Activity() {
             for (n in chunk) r.addView(smallBtn(n) { showAudit(n) })
             auditCard.addView(r)
         }
-        col.addView(auditCard)
+        p2.addView(auditCard)
 
-        // Havola
-        val linkCard = card()
-        linkCard.addView(cardHeader("🔗", "Havola tekshiruvi", "Havola ochilmaydi, faqat shakli tahlil qilinadi.", 0xFF0891B2.toInt()))
-        linkInput = field("Havolani shu yerga qo'ying")
-        linkInput.inputType = InputType.TYPE_TEXT_VARIATION_URI
-        linkCard.addView(linkInput)
-        linkCard.addView(button("Tekshirish", 0xFF0891B2.toInt()) { checkLink() })
-        col.addView(linkCard)
-
-        // Xabar matni
-        val msgBox = card()
-        msgCard = msgBox
-        msgBox.addView(cardHeader("💬", "Firibgar xabar tekshiruvi", "Shubhali SMS yoki Telegram xabarini qo'ying: firibgarlik belgilari topiladi. Matn telefondan chiqmaydi.", 0xFFEA580C.toInt()))
-        msgInput = field("Xabar matnini shu yerga qo'ying")
-        msgInput.setSingleLine(false)
-        msgInput.minLines = 3
-        msgInput.maxLines = 8
-        msgInput.gravity = Gravity.TOP or Gravity.START
-        msgInput.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
-        msgBox.addView(msgInput)
-        msgBox.addView(button("Xabarni tekshirish", 0xFFEA580C.toInt()) { checkMessage() })
-        col.addView(msgBox)
-
+        // =================== 4-bo'lim: SOZLAMALAR ===================
         // Oila himoyasi
         val fam = card()
         fam.addView(cardHeader("👪", "Oila himoyasi", "Yaqiningiz telefonida xavf topilsa, sizning Telegram'ingizga xabar boradi.", 0xFF8B5CF6.toInt()))
@@ -1167,72 +1299,23 @@ class MainActivity : Activity() {
             famBody.visibility = if (famBody.visibility == View.GONE) View.VISIBLE else View.GONE
         })
         fam.addView(famBody)
-        col.addView(fam)
+        p3.addView(fam)
 
-        // Qo'ng'iroq qalqoni
-        val call = card()
-        call.addView(cardHeader("📞", "Qo'ng'iroq qalqoni", "Xavf bazasidagi yoki o'zingiz qo'shgan raqamdan qo'ng'iroq kelsa, ogohlantiradi yoki rad etadi.", 0xFFF43F5E.toInt()))
-        callStatus = tv("", 13f, true)
-        callStatus.layoutParams = lp(8)
-        call.addView(callStatus)
-        callBtn = button("Qalqonni yoqish", 0xFFF43F5E.toInt()) { requestCallRole() }
-        call.addView(callBtn)
-        val rej = Switch(this)
-        rej.text = "Bazadagi raqamni avtomatik rad etish"
-        rej.setTextColor(pal.ink)
-        rej.isChecked = prefs.getBoolean("call_reject", false)
-        rej.setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("call_reject", on).apply() }
-        rej.layoutParams = lp(10)
-        call.addView(rej)
-        callInput = field("Qora ro'yxatga raqam (+998...)")
-        callInput.inputType = InputType.TYPE_CLASS_PHONE
-        call.addView(callInput)
-        call.addView(button("Raqamni qora ro'yxatga qo'shish", 0xFFF43F5E.toInt()) { addBlackNumber() })
-        call.addView(
-            tv(
-                "Yoqilmasa: Sozlamalar → Ilovalar → Standart ilovalar → «Qo'ng'iroqlarni aniqlash va spamdan himoya» ichidan Qo'riqchi Pro ni tanlang.",
-                11f, false, pal.sub
-            ).apply { layoutParams = lp(8) }
-        )
-        col.addView(call)
-
-        // Tarmoq nazorati
-        val net = card()
-        net.addView(cardHeader("🛰️", "Tarmoq nazorati", "Ilovalar qaysi manzillarga ulanayotganini ko'radi va xavfli manzillarni to'sadi. Faqat manzil nomlari ko'riladi, ma'lumotingiz o'qilmaydi.", 0xFF0EA5E9.toInt()))
-        netStatus = tv("", 13f, true)
-        netStatus.layoutParams = lp(8)
-        net.addView(netStatus)
-        netBtn = button("Nazoratni yoqish", 0xFF0EA5E9.toInt()) { toggleNet() }
-        net.addView(netBtn)
-        net.addView(button("So'nggi ulanishlar", 0xFF0284C7.toInt()) { showNet() })
-        net.addView(
-            tv(
-                "Eslatma: tizim sozlamasidagi «Shaxsiy DNS» (Private DNS) yoqilgan bo'lsa, nazorat ishlamaydi: Sozlamalar → Ulanishlar → Shaxsiy DNS → O'chiq. Yoqilganda tepada VPN belgisi (kalit) ko'rinadi, bu normal.",
-                11f, false, pal.sub
-            ).apply { layoutParams = lp(8) }
-        )
-        col.addView(net)
-
-        // Ruxsat o'zgarishi kuzatuvi
-        val pw = card()
-        pw.addView(cardHeader("🔁", "Ruxsat o'zgarishi kuzatuvi", "Ilova yangilangach yashirincha yangi xavfli ruxsat (SMS, maxsus imkoniyatlar va boshqalar) so'rasa, ogohlantiradi.", 0xFF14B8A6.toInt()))
-        pwInfo = tv(PermWatch.info(this), 12f, false, pal.sub)
-        pwInfo.layoutParams = lp(8)
-        pw.addView(pwInfo)
-        pw.addView(button("Hozir tekshirish", 0xFF14B8A6.toInt()) { runPermWatch() })
-        col.addView(pw)
-
-        // Umumiy xavf bazasi
+        // Xavf bazasi va qora ro'yxat
         val base = card()
-        base.addView(cardHeader("🌐", "Umumiy xavf bazasi", "Firibgar raqam, havola va fayllar ro'yxati internetdan yangilanadi va tekshiruvlarda ishlatiladi.", 0xFF0891B2.toInt()))
+        base.addView(cardHeader("🌐", "Xavf bazasi va qora ro'yxat", "Firibgar raqam, havola va fayllar ro'yxati internetdan yangilanadi. O'zingiz ham raqam qo'shishingiz mumkin.", 0xFF0891B2.toInt()))
         baseInfo = tv(Blocklist.info(this), 12f, false, pal.sub)
         baseInfo.layoutParams = lp(8)
         base.addView(baseInfo)
         base.addView(button("Bazani yangilash", 0xFF0891B2.toInt()) { refreshBase() })
+        callInput = field("Qora ro'yxatga raqam (+998...)")
+        callInput.inputType = InputType.TYPE_CLASS_PHONE
+        base.addView(callInput)
+        base.addView(button("Raqamni qora ro'yxatga qo'shish", 0xFFF43F5E.toInt()) { addBlackNumber() })
         base.addView(
             tv("Firibgar raqam yoki havola topsangiz, hisobotdagi «Xabar berish» tugmasi bilan yuboring. Ro'yxatga qo'shilishini egasi tekshiradi.", 11f, false, pal.sub)
         )
-        col.addView(base)
+        p3.addView(base)
 
         // VirusTotal
         val vtCard = card()
@@ -1251,7 +1334,7 @@ class MainActivity : Activity() {
             prefs.edit().putString("vt", keyInput.text.toString().trim()).apply()
             toast("Saqlandi")
         })
-        col.addView(vtCard)
+        p3.addView(vtCard)
 
         // Ilovani qulflash
         val lockCard = card()
@@ -1277,16 +1360,17 @@ class MainActivity : Activity() {
         lockRow.addView(lockText)
         lockRow.addView(lockSwitch)
         lockCard.addView(lockRow)
-        col.addView(lockCard)
+        p3.addView(lockCard)
 
-        // Natijalar
+        // =================== Umumiy: natijalar, hodisalar ===================
         status = tv("", 14f, true)
         status.layoutParams = lp(16)
         col.addView(status)
         results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(results)
 
-        // Hodisalar
+        val ev = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        evWrap = ev
         val evHead = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1303,9 +1387,10 @@ class MainActivity : Activity() {
         }
         evHead.addView(evTitle)
         evHead.addView(clear)
-        col.addView(evHead)
+        ev.addView(evHead)
         events = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(events)
+        ev.addView(events)
+        col.addView(ev)
 
         val ver = try {
             packageManager.getPackageInfo(packageName, 0).versionName
@@ -1319,17 +1404,42 @@ class MainActivity : Activity() {
             }
         )
 
-        for (i in 0 until col.childCount) {
-            val v = col.getChildAt(i)
-            v.alpha = 0f
-            v.translationY = dp(16).toFloat()
-            v.animate().alpha(1f).translationY(0f).setStartDelay(i * 40L).setDuration(350).start()
+        // Pastki menyu
+        val nav = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = shape(pal.card, 0, pal.line)
+            setPadding(dp(6), dp(6), dp(6), dp(10))
         }
+        val tabs = listOf("🛡️" to "Himoya", "🔎" to "Tekshirish", "📱" to "Telefon", "⚙️" to "Sozlamalar")
+        val btns = ArrayList<LinearLayout>()
+        for ((i, t) in tabs.withIndex()) {
+            val b = LinearLayout(this)
+            b.orientation = LinearLayout.VERTICAL
+            b.gravity = Gravity.CENTER
+            b.setPadding(dp(4), dp(6), dp(4), dp(6))
+            b.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+            b.isClickable = true
+            b.setOnClickListener { selectTab(i) }
+            b.addView(tv(t.first, 20f, false).apply { gravity = Gravity.CENTER })
+            b.addView(tv(t.second, 11f, true, pal.sub).apply { gravity = Gravity.CENTER })
+            nav.addView(b)
+            btns.add(b)
+        }
+        tabBtns = btns
+
+        val outer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(pal.bg)
+        }
+        root.layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f)
+        outer.addView(root)
+        outer.addView(nav)
 
         refreshShieldUi()
         refreshCallUi()
         refreshNetUi()
-        setContentView(root)
+        selectTab(0, false)
+        setContentView(outer)
     }
 
     // ---------- Real vaqt himoyasi ----------
@@ -1929,6 +2039,7 @@ class MainActivity : Activity() {
             val t = i.getStringExtra(Intent.EXTRA_TEXT)
             if (t != null && t.trim().isNotEmpty()) {
                 setIntent(Intent())
+                selectTab(1, false)
                 val found = urlIn(t)
                 results.removeAllViews()
                 status.text = ""
