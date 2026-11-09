@@ -160,6 +160,8 @@ class MainActivity : Activity() {
     private lateinit var clipBox: LinearLayout
     private lateinit var lockSwitch: Switch
     private lateinit var summaryBox: LinearLayout
+    private lateinit var homeBox: LinearLayout
+    private var mainView: View? = null
     private var scanRing: ScoreRing? = null
     private var scanSub: TextView? = null
     private var scanBar: ProgressBar? = null
@@ -281,6 +283,7 @@ class MainActivity : Activity() {
         refreshGuardUi()
         refreshEvents()
         checkClipboard()
+        if (!prefs.getBoolean("onb", false)) showOnboarding()
     }
 
     override fun onResume() {
@@ -1222,6 +1225,8 @@ class MainActivity : Activity() {
         // =================== 1-bo'lim: HIMOYA ===================
         summaryBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         p0.addView(summaryBox)
+        homeBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        p0.addView(homeBox)
 
         // Fon himoyasi
         guardCard = LinearLayout(this).apply {
@@ -1355,6 +1360,12 @@ class MainActivity : Activity() {
             tileRow(
                 tile("🔁", L("Ruxsat o'zgarishi", "Изменение разрешений", "Permission changes"), L("Yangi xavfli ruxsatlar kuzatuvi", "Слежение за новыми опасными разрешениями", "Tracks new risky permissions"), 0xFF14B8A6.toInt()) { runPermWatch() },
                 tile("🧾", L("Dalil to'plami", "Сбор доказательств", "Evidence report"), L("Hodisalar hisoboti", "Отчёт о событиях", "Events report"), 0xFF7C3AED.toInt()) { buildEvidence() }
+            )
+        )
+        p2.addView(
+            tileRow(
+                tile("📶", L("Wi-Fi tahlili", "Анализ Wi-Fi", "Wi-Fi analysis"), L("Tarmoq xavfsizligi", "Безопасность сети", "Network safety"), 0xFF6366F1.toInt()) { showWifi() },
+                tile("🤝", L("Ishonchli ilovalar", "Доверенные", "Trusted apps"), L("Ignor ro'yxati", "Список игнора", "Ignore list"), 0xFF16A34A.toInt()) { showIgnored() }
             )
         )
         pwInfo = tv(PermWatch.info(this), 11f, false, pal.sub)
@@ -1563,6 +1574,7 @@ class MainActivity : Activity() {
         refreshCallUi()
         refreshNetUi()
         selectTab(0, false)
+        mainView = outer
         setContentView(outer)
     }
 
@@ -1668,6 +1680,319 @@ class MainActivity : Activity() {
             }
         }
 
+    // ---------- Bosh ekran: hisoblagichlar, Wi-Fi, ignor ro'yxati, tanishtiruv ----------
+
+    private class StatRow(val count: TextView, val badge: TextView)
+
+    private fun addStat(parent: LinearLayout, icon: String, title: String, more: String, onMore: () -> Unit): StatRow {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = shape(pal.bg, 14, pal.line)
+            layoutParams = lp(10)
+            isClickable = true
+            setOnClickListener { onMore() }
+        }
+        row.addView(tv(icon, 24f))
+        val mid = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { leftMargin = dp(10) }
+        }
+        mid.addView(tv(title, 14f, true))
+        val badge = tv("…", 11f, true, Color.WHITE)
+        badge.setPadding(dp(8), dp(3), dp(8), dp(3))
+        badge.background = shape(pal.sub, 8)
+        badge.layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(4) }
+        mid.addView(badge)
+        row.addView(mid)
+        val count = tv("", 24f, true)
+        count.setPadding(dp(8), 0, dp(8), 0)
+        row.addView(count)
+        row.addView(tv(more + " ›", 12f, true, pal.accent))
+        parent.addView(row)
+        return StatRow(count, badge)
+    }
+
+    private fun setBadge(h: StatRow, state: Int, text: String) {
+        h.badge.text = text
+        h.badge.background = shape(stateColor(state), 8)
+    }
+
+    private fun setStat(h: StatRow, n: Int) {
+        h.count.text = "$n"
+        when {
+            n == 0 -> setBadge(h, 0, L("Xavfsiz", "Безопасно", "Safe"))
+            n < 3 -> setBadge(h, 1, L("Diqqat!", "Внимание!", "Attention!"))
+            else -> setBadge(h, 2, L("Xavfli!", "Опасно!", "Dangerous!"))
+        }
+        h.count.setTextColor(if (n == 0) pal.good else if (n < 3) pal.warn else pal.bad)
+    }
+
+    private fun refreshHome() {
+        homeBox.removeAllViews()
+        val scanned = prefs.getLong("lastScan", 0L) != 0L
+        val danger = prefs.getInt("lastDanger", 0)
+        val susp = prefs.getInt("lastSusp", 0)
+        val details = L("Batafsil", "Подробнее", "Details")
+
+        val c = card()
+        c.addView(
+            cardHeader(
+                "📊", L("Xavf hisoblagichlari", "Счётчики угроз", "Threat counters"),
+                L("Telefoningizdagi xavflar toifalar bo'yicha. Qatorni bosing.", "Угрозы на вашем телефоне по категориям. Нажмите на строку.", "Threats on your phone by category. Tap a row."),
+                0xFF2563EB.toInt()
+            )
+        )
+        val apps = addStat(c, "🦠", L("Ilovalar xavfi", "Угрозы приложений", "App threats"), L("Tekshirish", "Проверить", "Scan")) { scanInstalled() }
+        if (scanned) {
+            setStat(apps, danger + susp)
+            if (danger > 0) setBadge(apps, 2, L("Xavfli!", "Опасно!", "Dangerous!"))
+        } else {
+            apps.count.text = "–"
+            apps.badge.text = L("Tekshirilmagan", "Не проверено", "Not scanned")
+        }
+        val vuln = addStat(c, "🩺", L("Telefon zaifliklari", "Уязвимости телефона", "Phone weaknesses"), details) { showHealth() }
+        val priv = addStat(c, "🕵️", L("Maxfiylik tahdidlari", "Угрозы приватности", "Privacy threats"), details) { showOrigin() }
+        val w = WifiCheck.run(this)
+        val wifi = addStat(c, "📶", L("Wi-Fi tahlili", "Анализ Wi-Fi", "Wi-Fi analysis"), details) { showWifi() }
+        wifi.count.text = ""
+        setBadge(
+            wifi, w.state,
+            when (w.state) {
+                0 -> L("Xavfsiz", "Безопасно", "Safe")
+                1 -> L("Diqqat!", "Внимание!", "Attention!")
+                2 -> L("Xavfli!", "Опасно!", "Dangerous!")
+                else -> w.title
+            }
+        )
+        c.addView(
+            tv(
+                L(
+                    "«Maxfiylik»: do'kondan tashqari o'rnatilgan va kamera, mikrofon, joylashuv, SMS yoki kontaktga ruxsati bor ilovalar soni.",
+                    "«Приватность»: число приложений не из магазина с доступом к камере, микрофону, геолокации, SMS или контактам.",
+                    "«Privacy»: number of apps installed outside the store that can access the camera, microphone, location, SMS or contacts."
+                ),
+                11f, false, pal.sub
+            ).apply { layoutParams = lp(4) }
+        )
+        homeBox.addView(c)
+
+        Thread {
+            val v = try {
+                HomeStats.vulnerabilities(this)
+            } catch (e: Exception) {
+                -1
+            }
+            val p = try {
+                HomeStats.privacy(this)
+            } catch (e: Exception) {
+                -1
+            }
+            runOnUiThread {
+                if (v >= 0) setStat(vuln, v)
+                if (p >= 0) setStat(priv, p)
+            }
+        }.start()
+    }
+
+    private fun showWifi() {
+        results.removeAllViews()
+        status.text = ""
+        val w = WifiCheck.run(this)
+        val tone = stateColor(w.state)
+        val head = card(0)
+        head.background = gradBg(mix(pal.card, tone, 0.28f), pal.card, 22, mix(pal.line, tone, 0.6f))
+        head.addView(tv("📶", 40f).apply { gravity = Gravity.CENTER })
+        head.addView(tv(w.title, 17f, true, tone).apply { gravity = Gravity.CENTER })
+        results.addView(head)
+        for (l in w.lines) {
+            val col = stateColor(l.state)
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                background = shape(pal.card, 16, mix(pal.line, col, 0.5f))
+                layoutParams = lp(10)
+            }
+            box.addView(tv(stateIcon(l.state) + "  " + l.text, 13f, l.state == 2, if (l.state == 0) pal.ink else col))
+            results.addView(box)
+        }
+        results.addView(
+            tv(
+                L(
+                    "Wi-Fi nomi va paroli o'qilmaydi va saqlanmaydi. Faqat shifrlash turi tekshiriladi.",
+                    "Название и пароль Wi-Fi не читаются и не сохраняются. Проверяется только тип шифрования.",
+                    "The Wi-Fi name and password are not read or stored. Only the encryption type is checked."
+                ),
+                11f, false, pal.sub
+            ).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(12), 0, 0)
+            }
+        )
+        scrollToResults()
+    }
+
+    private fun showIgnored() {
+        results.removeAllViews()
+        status.text = ""
+        val list = Trust.all(this).toList().sorted()
+        val head = card(0)
+        head.addView(
+            cardHeader(
+                "🤝", L("Ishonchli ilovalar", "Доверенные приложения", "Trusted apps"),
+                L("«Ishonaman» deb belgilangan ilovalar tekshiruv natijasida ko'rsatilmaydi. Xohlasangiz, qaytarishingiz mumkin.",
+                    "Приложения, отмеченные как доверенные, не показываются в результатах проверки. Их можно вернуть.",
+                    "Apps marked as trusted are hidden from scan results. You can restore them."),
+                0xFF16A34A.toInt()
+            )
+        )
+        results.addView(head)
+        if (list.isEmpty()) {
+            results.addView(card().apply {
+                addView(tv(L("Ro'yxat bo'sh.", "Список пуст.", "The list is empty."), 14f, true))
+            })
+        }
+        val pm = packageManager
+        for (pkg in list) {
+            val label = try {
+                pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString()
+            } catch (e: Exception) {
+                pkg
+            }
+            val box = card(8)
+            box.addView(tv(label, 15f, true))
+            box.addView(tv(pkg, 11f, false, pal.sub))
+            val r = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = lp(6)
+            }
+            r.addView(smallBtn(L("Qaytarish", "Вернуть", "Restore")) {
+                IgnoreList.remove(this, pkg)
+                showIgnored()
+            })
+            box.addView(r)
+            results.addView(box)
+        }
+        scrollToResults()
+    }
+
+    private fun showOnboarding() {
+        var page = 0
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setBackgroundColor(pal.bg)
+            setPadding(dp(28), dp(40), dp(28), dp(28))
+        }
+        fun endOnb() {
+            prefs.edit().putBoolean("onb", true).apply()
+            mainView?.let { setContentView(it) }
+        }
+        fun render() {
+            box.removeAllViews()
+            val skip = tv(L("O'tkazib yuborish", "Пропустить", "Skip"), 13f, true, pal.accent)
+            skip.gravity = Gravity.END
+            skip.setPadding(dp(8), dp(8), dp(8), dp(8))
+            skip.isClickable = true
+            skip.setOnClickListener { endOnb() }
+            skip.layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
+            if (page < 2) box.addView(skip) else box.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(MATCH, dp(36)) })
+
+            val icon = TextView(this).apply {
+                text = listOf("🛡️", "🔔", "✅")[page]
+                textSize = 54f
+                gravity = Gravity.CENTER
+                background = GradientDrawable(
+                    GradientDrawable.Orientation.TL_BR,
+                    intArrayOf(0xFF2563EB.toInt(), 0xFF7C3AED.toInt())
+                ).apply { cornerRadius = dp(36).toFloat() }
+                layoutParams = LinearLayout.LayoutParams(dp(120), dp(120)).apply { topMargin = dp(24) }
+            }
+            box.addView(icon)
+            val title = when (page) {
+                0 -> L("Xush kelibsiz!", "Добро пожаловать!", "Welcome!")
+                1 -> L("Fon rejimida himoya", "Защита в фоне", "Background protection")
+                else -> L("Ruxsatlarni bering", "Выдайте разрешения", "Grant permissions")
+            }
+            val body = when (page) {
+                0 -> L(
+                    "Qo'riqchi Pro telefoningizni firibgar ilova, havola, xabar va qo'ng'iroqlardan himoya qiladi. Barcha tekshiruv telefoningizning o'zida bajariladi.",
+                    "Qo'riqchi Pro защищает телефон от мошеннических приложений, ссылок, сообщений и звонков. Вся проверка выполняется на самом телефоне.",
+                    "Qo'riqchi Pro protects your phone from scam apps, links, messages and calls. All checks run on your phone itself."
+                )
+                1 -> L(
+                    "24/7 himoya ishlashi uchun bir necha ruxsat kerak: bildirishnomalar va fonda ishlash. Har bir ruxsat nima uchun kerakligi ilova ichida yozilgan.",
+                    "Для защиты 24/7 нужны несколько разрешений: уведомления и работа в фоне. Зачем нужно каждое, написано в приложении.",
+                    "Round-the-clock protection needs a few permissions: notifications and background work. The app explains why each one is needed."
+                )
+                else -> L(
+                    "Hozir ruxsat bering yoki keyinroq «Himoya» bo'limidan yoqing.",
+                    "Дайте разрешения сейчас или включите их позже на вкладке «Защита».",
+                    "Grant permissions now or enable them later in the Protection tab."
+                )
+            }
+            box.addView(tv(title, 24f, true).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(24), 0, dp(8))
+            })
+            box.addView(tv(body, 14f, false, pal.sub).apply { gravity = Gravity.CENTER })
+            if (page == 0) {
+                val langRow = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(20) }
+                }
+                for ((code, name) in listOf("uz" to "O'zbekcha", "ru" to "Русский", "en" to "English")) {
+                    langRow.addView(smallBtn(name) {
+                        prefs.edit().putString("lang", code).apply()
+                        recreate()
+                    })
+                }
+                box.addView(langRow)
+            }
+            if (page == 2) {
+                box.addView(button(L("🔔  Bildirishnomalarga ruxsat", "🔔  Разрешение на уведомления", "🔔  Allow notifications"), pal.accent) {
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 5)
+                    } else {
+                        toast(L("Bu Android versiyasida shart emas", "На этой версии Android не требуется", "Not needed on this Android version"))
+                    }
+                })
+                box.addView(button(L("🔋  Fonda ishlash sozlamalari", "🔋  Настройки работы в фоне", "🔋  Background settings"), 0xFF0EA5E9.toInt()) {
+                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                })
+            }
+            box.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f) })
+            val dots = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(12) }
+            }
+            for (i in 0..2) {
+                dots.addView(tv("●", 14f, false, if (i == page) pal.accent else pal.line).apply {
+                    setPadding(dp(4), 0, dp(4), 0)
+                })
+            }
+            box.addView(dots)
+            box.addView(
+                button(if (page < 2) L("Davom etish", "Продолжить", "Continue") else L("Boshlash", "Начать", "Start"), pal.accent) {
+                    if (page < 2) {
+                        page++
+                        render()
+                    } else {
+                        endOnb()
+                    }
+                }
+            )
+        }
+        render()
+        setContentView(ScrollView(this).apply {
+            setBackgroundColor(pal.bg)
+            isFillViewport = true
+            addView(box)
+        })
+    }
+
     private fun refreshSummary() {
         scanRing?.stopSpin()
         scanRing = null
@@ -1737,6 +2062,7 @@ class MainActivity : Activity() {
             })
         }
         summaryBox.addView(c)
+        refreshHome()
     }
 
     /** Tekshiruv paytida: aylanuvchi halqa, joriy ilova nomi va progress chizig'i. */
