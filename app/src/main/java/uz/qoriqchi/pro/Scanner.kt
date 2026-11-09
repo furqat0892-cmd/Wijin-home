@@ -77,7 +77,21 @@ object Scanner {
     /** Taqlid qilinadigan brendlar (nomi shu so'zni o'z ichiga olib, do'kondan emas bo'lsa shubhali). */
     private val brandWords = listOf(
         "click", "payme", "uzum", "humo", "uzcard", "myid", "my id", "soliq", "mygov", "my.gov",
-        "egov", "telegram", "whatsapp", "google play", "instagram", "facebook", "davlat xizmat"
+        "egov", "telegram", "whatsapp", "google play", "instagram", "facebook", "davlat xizmat",
+        "paynet", "apelsin", "kapitalbank", "xalq bank", "xalqbank", "agrobank", "asakabank", "ipoteka",
+        "hamkorbank", "infinbank", "anorbank", "davrbank", "turonbank", "aloqabank", "orient finans",
+        "ucell", "beeline", "uzmobile", "mobiuz"
+    )
+
+    /** O'zbekistonga xos bo'lmagan, jahon brendlari. */
+    private val globalBrands = setOf("telegram", "whatsapp", "google play", "instagram", "facebook")
+
+    /** Tekshirib topilgan rasmiy ilova paket boshlanishlari (to'liq emas: noto'g'ri signal bermaslik uchun ehtiyotkor ishlatiladi). */
+    private val officialPrefixes = mapOf(
+        "click" to listOf("air.com.ssdsoftwaresolutions", "uz.click"),
+        "payme" to listOf("uz.dida."),
+        "uzum" to listOf("uz.uzum"),
+        "kapitalbank" to listOf("uz.kapitalbank")
     )
 
     /** Aldov/yangilanish niqobidagi ilovalar uchun xos so'zlar. */
@@ -294,21 +308,38 @@ object Scanner {
             }
         }
 
-        if (sideloaded && !system) {
+        if (!system) {
             val brand = brandWords.firstOrNull { lower.contains(it) }
-            if (brand != null && knownNames.none { (n, pre) -> lower == n && pkg.startsWith(pre) }) {
-                add(25, "Rasmiy do'kondan emas, lekin \"$brand\" nomini ishlatmoqda: soxta nusxa bo'lishi mumkin")
+            if (brand != null) {
+                val prefixes = officialPrefixes[brand]
+                val official = (prefixes != null && prefixes.any { pkg.startsWith(it) }) ||
+                    knownNames.any { (n, pre) -> lower == n && pkg.startsWith(pre) }
+                val uz = brand !in globalBrands
+                if (sideloaded && !official) {
+                    add(
+                        if (uz) 55 else 30,
+                        "Rasmiy do'kondan emas, lekin \"$brand\" nomini ishlatmoqda va paket nomi ($pkg) rasmiy emas: soxta nusxa bo'lishi ehtimoli yuqori"
+                    )
+                } else if (!sideloaded && uz && prefixes != null && !official) {
+                    add(30, "\"$brand\" nomli ilova, lekin paket nomi ($pkg) rasmiy ilovanikiga o'xshamaydi: tekshirib ko'ring")
+                }
             }
-            if (lureWords.any { lower.contains(it) }) {
+            if (sideloaded && lureWords.any { lower.contains(it) }) {
                 add(15, "Nomi aldov/yangilanish niqobida (\"$label\")")
             }
+        }
+
+        val remote = !system && RemoteGuard.isRemote(pkg, lower)
+        val remotePts = if (remote) 30 else 0
+        if (remote) {
+            add(30, "Masofadan boshqarish ilovasi: firibgarlar telefoningizni shu orqali boshqaradi. Faqat o'zingiz o'rnatgan va ishongan odamga ishlating")
         }
 
         if (f.none { it.points > 0 }) add(0, "Xavfli belgilar topilmadi")
 
         var raw = f.sumOf { it.points }
         if (fromStore && raw > 0) {
-            raw /= 2
+            raw = (raw - remotePts) / 2 + remotePts
             add(0, "Rasmiy do'kondan o'rnatilgani uchun xavf bali ikki baravar kamaytirildi")
         }
         val score = minOf(100, raw)

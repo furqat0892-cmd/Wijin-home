@@ -72,6 +72,11 @@ class DailyScanService : JobService() {
                 .putInt("lastDanger", list.count { it.score >= 50 })
                 .putInt("lastSusp", list.count { it.score in 25..49 })
                 .apply()
+            try {
+                PermWatch.check(c)
+            } catch (e: Exception) {
+                // ruxsat kuzatuvi xatosi kunlik tekshiruvni to'xtatmasin
+            }
             Store.add(c, "Kunlik tekshiruv", "${list.size} ta ilova: ${risky.size} tasi e'tibor talab qiladi", 0)
         }
     }

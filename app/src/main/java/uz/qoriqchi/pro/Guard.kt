@@ -286,6 +286,13 @@ class GuardService : Service() {
                     i.getBooleanExtra(Intent.EXTRA_REPLACING, false)
                 ) return
                 if (pkg == packageName) return
+                if (i.action == Intent.ACTION_PACKAGE_ADDED) {
+                    try {
+                        RemoteGuard.onInstalled(c, pkg)
+                    } catch (e: Exception) {
+                        // ogohlantirish chiqmasa ham tekshiruv davom etadi
+                    }
+                }
                 exec.execute { scanPackage(pkg) }
             }
         }

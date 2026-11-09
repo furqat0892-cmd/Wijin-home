@@ -176,6 +176,7 @@ class MainActivity : Activity() {
     private lateinit var callInput: EditText
     private lateinit var netStatus: TextView
     private lateinit var netBtn: TextView
+    private lateinit var pwInfo: TextView
     private var scrollRoot: ScrollView? = null
     private lateinit var msgInput: EditText
     private lateinit var msgCard: View
@@ -292,6 +293,7 @@ class MainActivity : Activity() {
             refreshCallUi()
             refreshNetUi()
             Blocklist.maybeRefresh(applicationContext)
+            PermWatch.checkIfDue(applicationContext)
         }
     }
 
@@ -854,6 +856,37 @@ class MainActivity : Activity() {
         scrollToResults()
     }
 
+    private fun runPermWatch() {
+        toast("Tekshirilmoqda…")
+        Thread {
+            val res = try {
+                PermWatch.check(this)
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                pwInfo.text = PermWatch.info(this)
+                results.removeAllViews()
+                if (res == null) {
+                    status.text = "Tekshirib bo'lmadi."
+                } else if (res.first) {
+                    status.text = "Boshlang'ich holat saqlandi. Bundan keyin yangi ruxsatlar paydo bo'lsa, ogohlantiramiz."
+                } else if (res.changes.isEmpty()) {
+                    status.text = "O'zgarish topilmadi: ilovalar ruxsatlari avvalgidek."
+                } else {
+                    status.text = "${res.changes.size} ta ilovada yangi ruxsat topildi:"
+                    for (c in res.changes) {
+                        results.addView(card().apply {
+                            addView(tv("⚠️ ${c.label}", 15f, true))
+                            addView(tv("Yangi: " + c.added.joinToString(", "), 13f, true, if (c.critical) pal.bad else pal.warn))
+                        })
+                    }
+                }
+                scrollToResults()
+            }
+        }.start()
+    }
+
     private fun findFamChat() {
         val t = famToken.text.toString().trim()
         if (!Family.validToken(t)) {
@@ -1179,6 +1212,15 @@ class MainActivity : Activity() {
             ).apply { layoutParams = lp(8) }
         )
         col.addView(net)
+
+        // Ruxsat o'zgarishi kuzatuvi
+        val pw = card()
+        pw.addView(cardHeader("🔁", "Ruxsat o'zgarishi kuzatuvi", "Ilova yangilangach yashirincha yangi xavfli ruxsat (SMS, maxsus imkoniyatlar va boshqalar) so'rasa, ogohlantiradi.", 0xFF14B8A6.toInt()))
+        pwInfo = tv(PermWatch.info(this), 12f, false, pal.sub)
+        pwInfo.layoutParams = lp(8)
+        pw.addView(pwInfo)
+        pw.addView(button("Hozir tekshirish", 0xFF14B8A6.toInt()) { runPermWatch() })
+        col.addView(pw)
 
         // Umumiy xavf bazasi
         val base = card()

@@ -11,9 +11,11 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.graphics.Canvas
+import android.graphics.drawable.Icon
 import android.graphics.Paint
 import android.graphics.RectF
 import android.net.ConnectivityManager
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -25,6 +27,7 @@ import android.telecom.CallScreeningService
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.view.View
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -261,6 +264,37 @@ object PhoneHealth {
                     "Administrator ilovani oddiy usulda o'chirib bo'lmaydi, zararli dasturlar shundan foydalanadi. Faol: $names.",
                     Settings.ACTION_SECURITY_SETTINGS
                 ), 15, 5
+            )
+        }
+
+        // Masofadan boshqarish ilovalari
+        val remoteApps = try {
+            val pm = ctx.packageManager
+            val list = ArrayList<String>()
+            var untrusted = false
+            for (p in pm.getInstalledPackages(0)) {
+                val ai = p.applicationInfo ?: continue
+                if ((ai.flags and ApplicationInfo.FLAG_SYSTEM) != 0) continue
+                if (p.packageName == ctx.packageName) continue
+                val lb = ai.loadLabel(pm).toString()
+                if (RemoteGuard.isRemote(p.packageName, lb.lowercase(Locale.ROOT))) {
+                    list.add(lb)
+                    if (!Origin.isStore(Origin.installerOf(ctx, p.packageName))) untrusted = true
+                }
+            }
+            Pair(list, untrusted)
+        } catch (e: Exception) {
+            Pair(ArrayList<String>(), false)
+        }
+        if (remoteApps.first.isEmpty()) {
+            add(HealthCheck("Masofadan boshqarish ilovalari", 0, "AnyDesk, TeamViewer, RustDesk kabi ilovalar topilmadi."), 0, 0)
+        } else {
+            val st = if (remoteApps.second) 2 else 1
+            add(
+                HealthCheck(
+                    "Masofadan boshqarish ilovalari", st,
+                    "Topildi: ${remoteApps.first.joinToString(", ")}. Firibgarlar «bank xodimi» nomidan shu ilovalarni o'rnatdirib, telefonni boshqaradi. O'zingiz o'rnatmagan bo'lsangiz, o'chiring."
+                ), 15, 8
             )
         }
 
@@ -1088,6 +1122,10 @@ class MessageShield : NotificationListenerService() {
         if (sbn == null) return
         val pkg = sbn.packageName
         if (pkg == packageName) return
+        if (RemoteGuard.isRemotePkg(pkg)) {
+            RemoteGuard.onActivity(this, pkg)
+            return
+        }
         val n = sbn.notification ?: return
         if ((n.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
         if (n.category != Notification.CATEGORY_MESSAGE && pkg !in msgApps) return
@@ -1502,5 +1540,257 @@ class DnsShield : VpnService() {
                 // tun yopilgan
             }
         }
+    }
+}
+
+// =====================================================================
+// 11. Masofadan boshqarish ilovalari (AnyDesk, TeamViewer va boshqalar)
+// =====================================================================
+
+object RemoteGuard {
+    private val prefixes = listOf(
+        "com.anydesk.", "com.teamviewer.", "com.carriez.flutter_hbb", "com.sand.air",
+        "com.splashtop.", "com.rsupport.", "com.logmein.", "com.zoho.assist"
+    )
+    private val words = listOf("anydesk", "teamviewer", "rustdesk", "airdroid", "splashtop", "quicksupport")
+    private val last = HashMap<String, Long>()
+
+    private const val PI = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+
+    fun isRemotePkg(pkg: String): Boolean = prefixes.any { pkg.startsWith(it) }
+
+    fun isRemote(pkg: String, labelLower: String): Boolean =
+        isRemotePkg(pkg) || words.any { labelLower.contains(it) }
+
+    private fun labelOf(ctx: Context, pkg: String): String = try {
+        val pm = ctx.packageManager
+        pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString()
+    } catch (e: Exception) {
+        pkg
+    }
+
+    /** Yangi ilova o'rnatilganda. */
+    fun onInstalled(ctx: Context, pkg: String) {
+        val label = labelOf(ctx, pkg)
+        if (!isRemote(pkg, label.lowercase(Locale.ROOT))) return
+        show(
+            ctx, pkg, "install", 60L * 1000,
+            "🚨 Masofadan boshqarish ilovasi o'rnatildi",
+            "$label o'rnatildi. Bank, soliq yoki «xavfsizlik xodimi» nomidan kimdir shu ilovani o'rnatishni so'ragan bo'lsa, bu firibgarlik: DARHOL o'chiring va hech qanday kod aytmang.",
+            "Masofadan boshqarish ilovasi o'rnatildi: $label"
+        )
+    }
+
+    /** Ilovaning bildirishnomasi ko'ringanda (faol sessiya belgisi). */
+    fun onActivity(ctx: Context, pkg: String) {
+        val label = labelOf(ctx, pkg)
+        show(
+            ctx, pkg, "session", 6L * 3600 * 1000,
+            "🚨 Telefoningiz hozir boshqa odamga ochiq bo'lishi mumkin",
+            "$label faol. Agar buni o'zingiz boshlamagan bo'lsangiz, ilovani darhol o'chiring va bankka o'zingiz qo'ng'iroq qiling.",
+            "Masofadan boshqarish ilovasi faol: $label"
+        )
+    }
+
+    private fun show(ctx: Context, pkg: String, kind: String, gapMs: Long, title: String, text: String, eventTitle: String) {
+        val key = "$kind|$pkg"
+        val now = System.currentTimeMillis()
+        synchronized(last) {
+            val prev = last[key]
+            if (prev != null && now - prev < gapMs) return
+            last[key] = now
+        }
+        Notifier.channels(ctx)
+        val id = key.hashCode()
+        val open = PendingIntent.getActivity(ctx, id, Intent(ctx, MainActivity::class.java), PI)
+        val delIntent = Intent(Intent.ACTION_DELETE, Uri.parse("package:$pkg")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val del = PendingIntent.getActivity(ctx, id + 1, delIntent, PI)
+        val nt = Notification.Builder(ctx, Notifier.CH_ALERT)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setCategory(Notification.CATEGORY_ALARM)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .addAction(
+                Notification.Action.Builder(
+                    Icon.createWithResource(ctx, android.R.drawable.ic_menu_delete),
+                    "Ilovani o'chirish",
+                    del
+                ).build()
+            )
+            .build()
+        ctx.getSystemService(NotificationManager::class.java).notify(id, nt)
+        Store.add(ctx, eventTitle, "Bank xodimi bunday ilova o'rnatishni so'ramaydi", 70)
+    }
+}
+
+// =====================================================================
+// 12. Ruxsat o'zgarishi kuzatuvi
+// =====================================================================
+
+data class PermChange(val label: String, val pkg: String, val added: List<String>, val critical: Boolean)
+
+data class PermResult(val first: Boolean, val changes: List<PermChange>)
+
+object PermWatch {
+
+    private val names = linkedMapOf(
+        "android.permission.READ_SMS" to "SMS o'qish",
+        "android.permission.RECEIVE_SMS" to "SMS qabul qilish",
+        "android.permission.SEND_SMS" to "SMS yuborish",
+        "android.permission.READ_CALL_LOG" to "Qo'ng'iroqlar tarixi",
+        "android.permission.READ_CONTACTS" to "Kontaktlar",
+        "android.permission.CAMERA" to "Kamera",
+        "android.permission.RECORD_AUDIO" to "Mikrofon",
+        "android.permission.ACCESS_FINE_LOCATION" to "Aniq joylashuv",
+        "android.permission.SYSTEM_ALERT_WINDOW" to "Boshqa ilovalar ustidan chizish",
+        "android.permission.REQUEST_INSTALL_PACKAGES" to "Boshqa APK o'rnatish",
+        "android.permission.MANAGE_EXTERNAL_STORAGE" to "Barcha fayllarga kirish",
+        "android.permission.BIND_ACCESSIBILITY_SERVICE" to "Maxsus imkoniyatlar xizmati",
+        "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" to "Bildirishnomalarni o'qish",
+        "android.permission.BIND_DEVICE_ADMIN" to "Qurilma administratori"
+    )
+
+    private val critical = setOf(
+        "android.permission.READ_SMS",
+        "android.permission.RECEIVE_SMS",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.BIND_ACCESSIBILITY_SERVICE",
+        "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE",
+        "android.permission.BIND_DEVICE_ADMIN"
+    )
+
+    private fun prefs(c: Context) = c.getSharedPreferences("qp", Context.MODE_PRIVATE)
+
+    @Suppress("DEPRECATION")
+    private fun snapshot(ctx: Context): Map<String, Set<String>> {
+        val pm = ctx.packageManager
+        val out = HashMap<String, Set<String>>()
+        val flags = PackageManager.GET_PERMISSIONS or PackageManager.GET_SERVICES or PackageManager.GET_RECEIVERS
+        for (p in pm.getInstalledPackages(flags)) {
+            val ai = p.applicationInfo ?: continue
+            if ((ai.flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0) continue
+            if (p.packageName == ctx.packageName) continue
+            val s = HashSet<String>()
+            val req = p.requestedPermissions
+            if (req != null) {
+                for (r in req) if (r in names) s.add(r)
+            }
+            val svs = p.services
+            if (svs != null) {
+                for (sv in svs) {
+                    val pr = sv.permission
+                    if (pr != null && pr in names) s.add(pr)
+                }
+            }
+            val rcs = p.receivers
+            if (rcs != null) {
+                for (rc in rcs) {
+                    val pr = rc.permission
+                    if (pr != null && pr in names) s.add(pr)
+                }
+            }
+            out[p.packageName] = s
+        }
+        return out
+    }
+
+    private fun parse(raw: String): Map<String, Set<String>>? {
+        return try {
+            val o = JSONObject(raw)
+            val out = HashMap<String, Set<String>>()
+            val keys = o.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val a = o.getJSONArray(k)
+                val s = HashSet<String>()
+                for (i in 0 until a.length()) s.add(a.getString(i))
+                out[k] = s
+            }
+            out
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun save(ctx: Context, m: Map<String, Set<String>>) {
+        val o = JSONObject()
+        for ((k, v) in m) {
+            val a = JSONArray()
+            for (x in v) a.put(x)
+            o.put(k, a)
+        }
+        prefs(ctx).edit()
+            .putString("pw_snap", o.toString())
+            .putLong("pw_time", System.currentTimeMillis())
+            .putInt("pw_n", m.size)
+            .apply()
+    }
+
+    fun info(ctx: Context): String {
+        val p = prefs(ctx)
+        val t = p.getLong("pw_time", 0L)
+        if (t == 0L) return "Hali tekshirilmagan. Birinchi tekshiruv boshlang'ich holatni saqlaydi."
+        val fmt = SimpleDateFormat("dd.MM HH:mm", Locale.getDefault())
+        return "Oxirgi tekshiruv: ${fmt.format(java.util.Date(t))}  •  ${p.getInt("pw_n", 0)} ta ilova kuzatilmoqda"
+    }
+
+    /** 3 soatdan ko'p o'tgan bo'lsa, fonda tekshiradi. */
+    fun checkIfDue(ctx: Context) {
+        if (System.currentTimeMillis() - prefs(ctx).getLong("pw_time", 0L) < 3L * 3600 * 1000) return
+        Thread {
+            try {
+                check(ctx)
+            } catch (e: Exception) {
+                // keyingi safar
+            }
+        }.start()
+    }
+
+    @Synchronized
+    fun check(ctx: Context): PermResult {
+        val cur = snapshot(ctx)
+        val raw = prefs(ctx).getString("pw_snap", null)
+        val old: Map<String, Set<String>>? = if (raw == null) null else parse(raw)
+        val changes = ArrayList<PermChange>()
+        if (old != null) {
+            val pm = ctx.packageManager
+            for ((pkg, now) in cur) {
+                val before = old[pkg] ?: continue
+                val added = now.filter { it !in before }
+                if (added.isEmpty()) continue
+                val label = try {
+                    pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString()
+                } catch (e: Exception) {
+                    pkg
+                }
+                changes.add(PermChange(label, pkg, added.map { names[it] ?: it }, added.any { it in critical }))
+            }
+        }
+        save(ctx, cur)
+        for (c in changes) {
+            val detail = "Yangi ruxsat: " + c.added.joinToString(", ")
+            Store.add(ctx, "Ruxsat qo'shildi: ${c.label}", detail, if (c.critical) 75 else 40)
+            if (c.critical) {
+                Notifier.channels(ctx)
+                val id = ("pw|" + c.pkg).hashCode()
+                val pi = PendingIntent.getActivity(
+                    ctx, id, Intent(ctx, MainActivity::class.java),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                val nt = Notification.Builder(ctx, Notifier.CH_ALERT)
+                    .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                    .setContentTitle("⚠️ ${c.label} yangi xavfli ruxsat so'radi")
+                    .setContentText(detail)
+                    .setStyle(Notification.BigTextStyle().bigText("$detail\nIlova yangilanganidan keyin paydo bo'ldi. Bu ruxsat nima uchun kerakligini bilmasangiz, ilovani o'chiring."))
+                    .setContentIntent(pi)
+                    .setAutoCancel(true)
+                    .build()
+                ctx.getSystemService(NotificationManager::class.java).notify(id, nt)
+            }
+        }
+        return PermResult(old == null, changes)
     }
 }
