@@ -248,3 +248,56 @@ object Vendor {
 
     fun isVendor(pkg: String): Boolean = prefixes.any { pkg.startsWith(it) }
 }
+
+/** Domen qachon ro'yxatdan o'tganini ochiq RDAP reestridan so'raydi. Faqat domen nomi yuboriladi. */
+object DomainAge {
+    private val second = setOf("co", "com", "org", "net", "gov", "edu", "ac")
+
+    fun hostOf(input: String): String? {
+        var s = input.trim().lowercase()
+        s = s.substringAfter("://")
+        s = s.substringBefore('/').substringBefore('?').substringBefore('#')
+            .substringAfterLast('@').substringBefore(':')
+        if (!s.contains('.') || s.any { it == ' ' }) return null
+        if (s.all { it.isDigit() || it == '.' }) return null
+        return s
+    }
+
+    fun registrable(host: String): String {
+        val p = host.split('.').filter { it.isNotEmpty() }
+        if (p.size <= 2) return host
+        val tld = p.last()
+        return if (tld.length == 2 && p[p.size - 2] in second) {
+            p.takeLast(3).joinToString(".")
+        } else {
+            p.takeLast(2).joinToString(".")
+        }
+    }
+
+    /** Ro'yxatdan o'tgan vaqt (millisekund) yoki null: aniqlab bo'lmadi. Orqa oqimda chaqiring. */
+    fun registered(host: String): Long? {
+        val d = registrable(host)
+        var conn: java.net.HttpURLConnection? = null
+        try {
+            conn = java.net.URL("https://rdap.org/domain/$d").openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 6000
+            conn.readTimeout = 8000
+            conn.instanceFollowRedirects = true
+            conn.setRequestProperty("Accept", "application/rdap+json")
+            if (conn.responseCode != 200) return null
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val ev = org.json.JSONObject(body).optJSONArray("events") ?: return null
+            for (i in 0 until ev.length()) {
+                val o = ev.getJSONObject(i)
+                if (o.optString("eventAction") == "registration") {
+                    return java.time.OffsetDateTime.parse(o.optString("eventDate")).toInstant().toEpochMilli()
+                }
+            }
+            return null
+        } catch (e: Exception) {
+            return null
+        } finally {
+            conn?.disconnect()
+        }
+    }
+}

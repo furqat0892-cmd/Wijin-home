@@ -300,6 +300,7 @@ class MainActivity : Activity() {
             refreshNetUi()
             Blocklist.maybeRefresh(applicationContext)
             PermWatch.checkIfDue(applicationContext)
+            refreshUnknown()
         }
     }
 
@@ -1218,7 +1219,7 @@ class MainActivity : Activity() {
         val onlyLink = (found != null && t.length <= found.length + 25) ||
             (found == null && t.length < 25 && !t.contains(' '))
         if (onlyLink) {
-            showReport(linkReport(found ?: t), false)
+            showLink(found ?: t)
         } else {
             lastText = t
             showReport(ScamText.analyze(t, this, null), false)
@@ -1304,6 +1305,21 @@ class MainActivity : Activity() {
         permBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         guardCard.addView(permBox)
         p0.addView(guardCard)
+
+        // Noma'lum manbalardan APK o'rnatishni yopish
+        val unk = card()
+        unk.addView(
+            cardHeader(
+                "🚫", L("APK o'rnatishni yopish", "Закрыть установку APK", "Block APK installs"),
+                L("Telegram va brauzer orqali kelgan zararli APK o'rnatilmasligi uchun «Noma'lum manbalar» ruxsatini o'chiring. Eng ishonchli chora.",
+                    "Отключите разрешение «Неизвестные источники», чтобы вредоносный APK из Telegram и браузера не устанавливался. Самая надёжная мера.",
+                    "Turn off «Install unknown apps» so a malicious APK from Telegram or a browser can't be installed. The most reliable measure."),
+                0xFFDC2626.toInt()
+            )
+        )
+        unkBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        unk.addView(unkBox)
+        p0.addView(unk)
 
         // Qalqonlar: xabar, qo'ng'iroq, tarmoq (bitta kartada)
         val shields = card()
@@ -1669,6 +1685,7 @@ class MainActivity : Activity() {
         refreshShieldUi()
         refreshCallUi()
         refreshNetUi()
+        refreshUnknown()
         selectTab(0, false)
         mainView = outer
         setContentView(outer)
@@ -1959,6 +1976,129 @@ class MainActivity : Activity() {
                 if (p >= 0) setStat(priv, p)
             }
         }.start()
+    }
+
+    private fun showLink(u: String): View {
+        val v = showReport(linkReport(u), false)
+        addDomainAge(v, u)
+        return v
+    }
+
+    /** Hisobotga domen yoshi qatorini qo'shadi (internetdan, orqa oqimda). */
+    private fun addDomainAge(v: View, u: String) {
+        val host = DomainAge.hostOf(u) ?: return
+        val body = ((v as? LinearLayout)?.getChildAt(1) as? LinearLayout) ?: return
+        val line = tv(
+            L("🕒 Domen yoshi tekshirilmoqda (faqat domen nomi yuboriladi)…", "🕒 Проверяется возраст домена (отправляется только имя домена)…", "🕒 Checking domain age (only the domain name is sent)…"),
+            12f, false, pal.sub
+        )
+        line.layoutParams = lp(6)
+        body.addView(line)
+        Thread {
+            val ms = DomainAge.registered(host)
+            runOnUiThread {
+                if (ms == null) {
+                    line.text = L("🕒 Domen yoshini aniqlab bo'lmadi.", "🕒 Не удалось определить возраст домена.", "🕒 Couldn't determine the domain age.")
+                    return@runOnUiThread
+                }
+                val days = ((System.currentTimeMillis() - ms) / 86400000L).toInt().coerceAtLeast(0)
+                when {
+                    days < 30 -> {
+                        line.text = L(
+                            "⚠️ Domen atigi $days kun oldin ochilgan. Firibgar saytlar odatda yangi bo'ladi: ehtiyot bo'ling.",
+                            "⚠️ Домен зарегистрирован всего $days дн. назад. Мошеннические сайты обычно новые: будьте осторожны.",
+                            "⚠️ The domain was registered only $days days ago. Scam sites are usually new: be careful."
+                        )
+                        line.setTextColor(pal.bad)
+                        line.typeface = Typeface.DEFAULT_BOLD
+                    }
+                    days < 180 -> {
+                        line.text = L("⚠️ Domen $days kun oldin ochilgan (yangi).", "⚠️ Домену $days дн. (новый).", "⚠️ The domain is $days days old (new).")
+                        line.setTextColor(pal.warn)
+                    }
+                    else -> {
+                        val y = days / 365
+                        line.text = if (y >= 1) {
+                            L("✅ Domen $y yildan beri mavjud.", "✅ Домену больше $y лет.", "✅ The domain has existed for $y+ years.")
+                        } else {
+                            L("✅ Domen $days kundan beri mavjud.", "✅ Домену $days дн.", "✅ The domain is $days days old.")
+                        }
+                        line.setTextColor(pal.good)
+                    }
+                }
+            }
+        }.start()
+    }
+
+    // ---------- Noma'lum manbalardan APK o'rnatishni yopish ----------
+
+    private lateinit var unkBox: LinearLayout
+
+    @Suppress("DEPRECATION")
+    private fun installAllowed(pkg: String): Boolean = try {
+        val uid = packageManager.getApplicationInfo(pkg, 0).uid
+        val ops = getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
+        ops.checkOpNoThrow("android:request_install_packages", uid, pkg) == android.app.AppOpsManager.MODE_ALLOWED
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun refreshUnknown() {
+        if (!::unkBox.isInitialized) return
+        unkBox.removeAllViews()
+        val pm = packageManager
+        val known = listOf(
+            "org.telegram.messenger", "org.telegram.messenger.web", "org.telegram.plus", "org.thunderdog.challegram",
+            "nekox.messenger", "tw.nekomimi.nekogram",
+            "com.android.chrome", "org.mozilla.firefox", "com.opera.browser", "com.sec.android.app.sbrowser",
+            "com.mi.globalbrowser", "com.android.browser", "com.yandex.browser", "com.microsoft.emmx",
+            "com.whatsapp", "com.viber.voip",
+            "com.google.android.apps.nbu.files", "com.mi.android.globalFileexplorer", "com.sec.android.app.myfiles",
+            "com.android.fileexplorer"
+        )
+        var shown = 0
+        for (pkg in known) {
+            val label = try {
+                pm.getApplicationInfo(pkg, 0).loadLabel(pm).toString()
+            } catch (e: Exception) {
+                continue
+            }
+            val allowed = installAllowed(pkg)
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                background = shape(pal.bg, 14, if (allowed) pal.bad else pal.line)
+                layoutParams = lp(8)
+                isClickable = true
+                setOnClickListener {
+                    try {
+                        startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$pkg")))
+                    } catch (e: Exception) {
+                        toast(L("Sozlamani ochib bo'lmadi", "Не удалось открыть настройки", "Couldn't open the setting"))
+                    }
+                }
+            }
+            val col = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+            }
+            col.addView(tv(label, 14f, true))
+            col.addView(
+                if (allowed) {
+                    tv(L("⚠️ Hozir ruxsat berilgan: o'chiring", "⚠️ Сейчас разрешено: отключите", "⚠️ Currently allowed: turn it off"), 12f, true, pal.bad)
+                } else {
+                    tv(L("Sahifada «Ruxsat berish» o'chiq bo'lsin", "На странице «Разрешить» должно быть выключено", "On the page, «Allow» should be off"), 11f, false, pal.sub)
+                }
+            )
+            row.addView(col)
+            row.addView(tv(L("Ochish", "Открыть", "Open") + " ›", 12f, true, pal.accent))
+            unkBox.addView(row)
+            shown++
+        }
+        if (shown == 0) {
+            unkBox.addView(tv(L("Telegram yoki brauzer topilmadi.", "Telegram или браузер не найдены.", "No Telegram or browser found."), 12f, false, pal.sub))
+        }
     }
 
     private fun showWifi() {
@@ -2662,10 +2802,10 @@ class MainActivity : Activity() {
                 status.text = ""
                 if (found != null && t.trim().length <= found.length + 25) {
                     linkInput.setText(found)
-                    showReport(linkReport(found), false)
+                    showLink(found)
                 } else if (found == null && t.trim().length < 25 && !t.contains(' ')) {
                     linkInput.setText(t.trim())
-                    showReport(linkReport(t.trim()), false)
+                    showLink(t.trim())
                 } else {
                     msgInput.setText(t.trim())
                     lastText = t.trim()
@@ -2809,6 +2949,6 @@ class MainActivity : Activity() {
         }
         results.removeAllViews()
         status.text = ""
-        showReport(linkReport(s), false)
+        showLink(s)
     }
 }
