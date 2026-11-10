@@ -285,6 +285,7 @@ class MainActivity : Activity() {
         refreshGuardUi()
         refreshEvents()
         checkClipboard()
+        if (AppLock.enabled(this)) AppLock.setEnabled(this, false)
         if (!prefs.getBoolean("onb", false)) showOnboarding()
     }
 
@@ -299,8 +300,6 @@ class MainActivity : Activity() {
             refreshNetUi()
             Blocklist.maybeRefresh(applicationContext)
             PermWatch.checkIfDue(applicationContext)
-            refreshAppLockUi()
-            AppLock.start(this)
         }
     }
 
@@ -776,6 +775,7 @@ class MainActivity : Activity() {
         }
         shieldStatus.setTextColor(if (on) pal.good else pal.warn)
         shieldBtn.visibility = if (on) View.GONE else View.VISIBLE
+        syncPills()
     }
 
     private fun callShieldOn(): Boolean {
@@ -797,6 +797,7 @@ class MainActivity : Activity() {
         }
         callStatus.setTextColor(if (on) pal.good else pal.warn)
         callBtn.visibility = if (on) View.GONE else View.VISIBLE
+        syncPills()
     }
 
     private fun requestCallRole() {
@@ -835,6 +836,7 @@ class MainActivity : Activity() {
             netStatus.setTextColor(pal.warn)
             netBtn.text = L("Nazoratni yoqish", "Включить контроль", "Enable monitoring")
         }
+        syncPills()
     }
 
     private fun toggleNet() {
@@ -1094,6 +1096,43 @@ class MainActivity : Activity() {
 
     private fun panel(): LinearLayout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
+    /** Kartaning sarlavhadan keyingi qismini yig'iladigan qiladi: sarlavhani bossangiz ochiladi. */
+    private fun fold(c: LinearLayout, open: Boolean = false) {
+        if (c.childCount < 2) return
+        val head = c.getChildAt(0) as? LinearLayout ?: return
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = if (open) View.VISIBLE else View.GONE
+        }
+        val kids = ArrayList<View>()
+        for (i in 1 until c.childCount) kids.add(c.getChildAt(i))
+        for (k in kids) {
+            c.removeView(k)
+            body.addView(k)
+        }
+        c.addView(body)
+        val arrow = tv(if (open) "▾" else "▸", 18f, true, pal.sub)
+        arrow.setPadding(dp(8), 0, 0, 0)
+        head.addView(arrow)
+        head.isClickable = true
+        head.setOnClickListener {
+            val show = body.visibility == View.GONE
+            body.visibility = if (show) View.VISIBLE else View.GONE
+            arrow.text = if (show) "▾" else "▸"
+        }
+    }
+
+    private val pills = HashMap<TextView, TextView>()
+
+    /** Qalqon qatoridagi rangli «Yoqilgan / O'chiq» belgisini holat matni rangiga qarab yangilaydi. */
+    private fun syncPills() {
+        for ((st, pill) in pills) {
+            val on = st.currentTextColor == pal.good
+            pill.text = if (on) L("Yoqilgan", "Включено", "On") else L("O'chiq", "Выключено", "Off")
+            pill.background = shape(if (on) pal.good else pal.warn, 8)
+        }
+    }
+
     /** Qalqonlar kartasidagi bitta qator: sarlavha, holat, tugma va yig'ib qo'yiladigan batafsil qism. */
     private fun L(uz: String, ru: String, en: String): String =
         when (prefs.getString("lang", "uz")) {
@@ -1116,6 +1155,11 @@ class MainActivity : Activity() {
         val t = tv(title, 14f, true)
         t.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
         top.addView(t)
+        val pill = tv("…", 10f, true, Color.WHITE)
+        pill.setPadding(dp(8), dp(2), dp(8), dp(2))
+        pill.background = shape(pal.sub, 8)
+        pills[status] = pill
+        top.addView(pill)
         if (detail != null) {
             val more = tv(L("Batafsil", "Подробнее", "Details"), 12f, true, pal.accent)
             more.setPadding(dp(8), dp(4), 0, dp(4))
@@ -1263,7 +1307,7 @@ class MainActivity : Activity() {
 
         // Qalqonlar: xabar, qo'ng'iroq, tarmoq (bitta kartada)
         val shields = card()
-        shields.addView(cardHeader("🛡️", L("Qalqonlar", "Щиты", "Shields"), L("Kelayotgan xabar, qo'ng'iroq va tarmoq ulanishlarini real vaqtda tekshiradi.", "Проверяет входящие сообщения, звонки и сетевые подключения в реальном времени.", "Checks incoming messages, calls and network connections in real time."), 0xFF16A34A.toInt()))
+        shields.addView(cardHeader("🛡️", L("Xabar qalqoni", "Щит сообщений", "Message shield"), L("Telegram, SMS va boshqa xabarlardagi firibgar havola, bot va fayllarni real vaqtda aniqlaydi.", "Находит мошеннические ссылки, ботов и файлы в Telegram, SMS и других сообщениях в реальном времени.", "Detects scam links, bots and files in Telegram, SMS and other messages in real time."), 0xFF16A34A.toInt()))
 
         shieldStatus = tv("", 13f, true)
         shieldBtn = button(L("Ruxsat berish", "Дать разрешение", "Grant access"), 0xFF16A34A.toInt()) {
@@ -1308,7 +1352,6 @@ class MainActivity : Activity() {
                 11f, false, pal.sub
             ).apply { layoutParams = lp(8) }
         )
-        shieldRow(shields, L("📞 Qo'ng'iroq qalqoni", "📞 Щит звонков", "📞 Call shield"), callStatus, callBtn, callDetail)
 
         netStatus = tv("", 13f, true)
         netBtn = button(L("Nazoratni yoqish", "Включить контроль", "Enable monitoring"), 0xFF0EA5E9.toInt()) { toggleNet() }
@@ -1325,7 +1368,6 @@ class MainActivity : Activity() {
         }
         netRow.addView(smallBtn(L("So'nggi ulanishlar", "Последние подключения", "Recent connections")) { showNet() })
         netDetail.addView(netRow)
-        shieldRow(shields, L("🛰️ Tarmoq nazorati", "🛰️ Сетевой контроль", "🛰️ Network monitor"), netStatus, netBtn, netDetail)
         p0.addView(shields)
 
         // =================== 2-bo'lim: TEKSHIRISH ===================
@@ -1362,19 +1404,12 @@ class MainActivity : Activity() {
         )
         p2.addView(
             tileRow(
-                tile("🔁", L("Ruxsat o'zgarishi", "Изменение разрешений", "Permission changes"), L("Yangi xavfli ruxsatlar kuzatuvi", "Слежение за новыми опасными разрешениями", "Tracks new risky permissions"), 0xFF14B8A6.toInt()) { runPermWatch() },
-                tile("🧾", L("Dalil to'plami", "Сбор доказательств", "Evidence report"), L("Hodisalar hisoboti", "Отчёт о событиях", "Events report"), 0xFF7C3AED.toInt()) { buildEvidence() }
-            )
-        )
-        p2.addView(
-            tileRow(
-                tile("📶", L("Wi-Fi tahlili", "Анализ Wi-Fi", "Wi-Fi analysis"), L("Tarmoq xavfsizligi", "Безопасность сети", "Network safety"), 0xFF6366F1.toInt()) { showWifi() },
+                tile("🧾", L("Dalil to'plami", "Сбор доказательств", "Evidence report"), L("Hodisalar hisoboti", "Отчёт о событиях", "Events report"), 0xFF7C3AED.toInt()) { buildEvidence() },
                 tile("🤝", L("Ishonchli ilovalar", "Доверенные", "Trusted apps"), L("Ignor ro'yxati", "Список игнора", "Ignore list"), 0xFF16A34A.toInt()) { showIgnored() }
             )
         )
         pwInfo = tv(PermWatch.info(this), 11f, false, pal.sub)
         pwInfo.layoutParams = lp(0)
-        p2.addView(pwInfo)
 
         val auditCard = card()
         auditCard.addView(cardHeader("🔍", L("Ruxsatlar auditi", "Аудит разрешений", "Permission audit"), L("Qaysi ilova kamera, mikrofon, joylashuv va boshqalarga kira olishini ko'ring.", "Посмотрите, какие приложения имеют доступ к камере, микрофону, геолокации и другому.", "See which apps can access the camera, microphone, location and more."), 0xFFF59E0B.toInt()))
@@ -1386,7 +1421,6 @@ class MainActivity : Activity() {
             for (n in chunk) r.addView(smallBtn(n) { showAudit(n) })
             auditCard.addView(r)
         }
-        p2.addView(auditCard)
 
         // =================== 4-bo'lim: SOZLAMALAR ===================
         // Til tanlash
@@ -1403,6 +1437,7 @@ class MainActivity : Activity() {
             })
         }
         langCard.addView(langRow)
+        fold(langCard)
         p3.addView(langCard)
 
         // Oila himoyasi
@@ -1438,7 +1473,7 @@ class MainActivity : Activity() {
             famBody.visibility = if (famBody.visibility == View.GONE) View.VISIBLE else View.GONE
         })
         fam.addView(famBody)
-        p3.addView(fam)
+        fold(fam)
 
         // Xavf bazasi va qora ro'yxat
         val base = card()
@@ -1449,11 +1484,10 @@ class MainActivity : Activity() {
         base.addView(button(L("Bazani yangilash", "Обновить базу", "Update database"), 0xFF0891B2.toInt()) { refreshBase() })
         callInput = field(L("Qora ro'yxatga raqam (+998...)", "Номер для чёрного списка (+998...)", "Number to blacklist (+998...)"))
         callInput.inputType = InputType.TYPE_CLASS_PHONE
-        base.addView(callInput)
-        base.addView(button(L("Raqamni qora ro'yxatga qo'shish", "Добавить номер в чёрный список", "Add number to blacklist"), 0xFFF43F5E.toInt()) { addBlackNumber() })
         base.addView(
             tv(L("Firibgar raqam yoki havola topsangiz, hisobotdagi «Xabar berish» tugmasi bilan yuboring. Ro'yxatga qo'shilishini egasi tekshiradi.", "Нашли мошеннический номер или ссылку — отправьте кнопкой «Xabar berish» в отчёте. Добавление в список проверяет владелец.", "If you find a scam number or link, send it with the «Xabar berish» (Report) button in the result. The owner reviews additions to the list."), 11f, false, pal.sub)
         )
+        fold(base)
         p3.addView(base)
 
         // VirusTotal
@@ -1473,6 +1507,7 @@ class MainActivity : Activity() {
             prefs.edit().putString("vt", keyInput.text.toString().trim()).apply()
             toast(L("Saqlandi", "Сохранено", "Saved"))
         })
+        fold(vtCard)
         p3.addView(vtCard)
 
         // Ilovani qulflash
@@ -1556,7 +1591,7 @@ class MainActivity : Activity() {
                 11f, false, pal.sub
             ).apply { layoutParams = lp(8) }
         )
-        p3.addView(al)
+        fold(al)
 
         // =================== Umumiy: natijalar, hodisalar ===================
         status = tv("", 14f, true)
@@ -1896,18 +1931,6 @@ class MainActivity : Activity() {
         }
         val vuln = addStat(c, "🩺", L("Telefon zaifliklari", "Уязвимости телефона", "Phone weaknesses"), details) { showHealth() }
         val priv = addStat(c, "🕵️", L("Maxfiylik tahdidlari", "Угрозы приватности", "Privacy threats"), details) { showOrigin() }
-        val w = WifiCheck.run(this)
-        val wifi = addStat(c, "📶", L("Wi-Fi tahlili", "Анализ Wi-Fi", "Wi-Fi analysis"), details) { showWifi() }
-        wifi.count.text = ""
-        setBadge(
-            wifi, w.state,
-            when (w.state) {
-                0 -> L("Xavfsiz", "Безопасно", "Safe")
-                1 -> L("Diqqat!", "Внимание!", "Attention!")
-                2 -> L("Xavfli!", "Опасно!", "Dangerous!")
-                else -> w.title
-            }
-        )
         c.addView(
             tv(
                 L(
