@@ -277,6 +277,9 @@ object Scanner {
                     fromStore = true
                     add(0, "Rasmiy do'kondan o'rnatilgan ($installer)")
                 }
+                installer == null && Vendor.isVendor(pkg) -> {
+                    add(0, "Telefon ishlab chiqaruvchisining ilovasi (manba: tizim)")
+                }
                 installer == null -> {
                     sideloaded = true
                     add(10, "O'rnatish manbasi noma'lum (do'kondan emas)")

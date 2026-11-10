@@ -214,6 +214,7 @@ class ActionReceiver : BroadcastReceiver() {
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
         if (i.action != Intent.ACTION_BOOT_COMPLETED) return
+        AppLock.start(c)
         val on = c.getSharedPreferences("qp", Context.MODE_PRIVATE).getBoolean("guard", false)
         if (on) {
             try {

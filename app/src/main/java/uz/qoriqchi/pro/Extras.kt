@@ -440,6 +440,9 @@ object Origin {
             if (inst != null && inst in stores) {
                 kind = 0
                 via = nameOf(ctx, inst)
+            } else if (inst == null && Vendor.isVendor(p.packageName)) {
+                kind = 0
+                via = "Ishlab chiqaruvchi ilovasi"
             } else if (inst == null && init == null) {
                 kind = 2
                 via = "Manba noma'lum"

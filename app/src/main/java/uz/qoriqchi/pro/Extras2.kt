@@ -237,3 +237,14 @@ object HomeStats {
         return hit.size
     }
 }
+
+/** Telefon ishlab chiqaruvchilarining o'z ilovalari: o'rnatish manbasi bo'sh bo'lishi odatiy hol. */
+object Vendor {
+    private val prefixes = listOf(
+        "com.xiaomi.", "com.miui.", "com.mi.", "com.android.", "com.google.android.", "com.samsung.", "com.sec.",
+        "com.huawei.", "com.hihonor.", "com.oppo.", "com.coloros.", "com.heytap.", "com.oplus.", "com.vivo.",
+        "com.bbk.", "com.realme.", "com.transsion."
+    )
+
+    fun isVendor(pkg: String): Boolean = prefixes.any { pkg.startsWith(it) }
+}

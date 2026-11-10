@@ -184,6 +184,8 @@ class MainActivity : Activity() {
     private lateinit var msgCard: View
     private var audit: Map<String, List<Pair<String, String>>>? = null
     private var updating = false
+    private lateinit var alInfo: TextView
+    private lateinit var alSwitch: Switch
     private var started = false
     private var pendingIntent: Intent? = null
 
@@ -297,6 +299,8 @@ class MainActivity : Activity() {
             refreshNetUi()
             Blocklist.maybeRefresh(applicationContext)
             PermWatch.checkIfDue(applicationContext)
+            refreshAppLockUi()
+            AppLock.start(this)
         }
     }
 
@@ -1497,6 +1501,63 @@ class MainActivity : Activity() {
         lockCard.addView(lockRow)
         p3.addView(lockCard)
 
+        // Boshqa ilovalarni qulflash
+        val al = card()
+        al.addView(
+            cardHeader(
+                "🔐", L("Ilovalarni qulflash", "Блокировка приложений", "Lock other apps"),
+                L("Tanlangan ilovalar (Telegram, galereya, bank va boshqalar) ochilishdan oldin telefon ekran qulfini so'raydi.",
+                    "Выбранные приложения (Telegram, галерея, банк и др.) запрашивают блокировку экрана при открытии.",
+                    "Selected apps (Telegram, gallery, bank and others) ask for the screen lock before opening."),
+                0xFFEA580C.toInt()
+            )
+        )
+        alSwitch = Switch(this)
+        alSwitch.text = L("Ilova qulfini yoqish", "Включить блокировку", "Enable app lock")
+        alSwitch.setTextColor(pal.ink)
+        alSwitch.layoutParams = lp(8)
+        alSwitch.setOnCheckedChangeListener { btn, on ->
+            if (updating) return@setOnCheckedChangeListener
+            if (on && !AppLock.ready(this)) {
+                updating = true
+                btn.isChecked = false
+                updating = false
+                toast(L("Avval pastdagi ikkala ruxsatni bering", "Сначала выдайте оба разрешения ниже", "Grant both permissions below first"))
+            } else {
+                AppLock.setEnabled(this, on)
+            }
+        }
+        al.addView(alSwitch)
+        alInfo = tv("", 12f, true)
+        alInfo.layoutParams = lp(8)
+        al.addView(alInfo)
+        al.addView(button(L("1) Foydalanish statistikasi ruxsati", "1) Доступ к статистике использования", "1) Usage access permission"), 0xFFEA580C.toInt()) {
+            try {
+                startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+            } catch (e: Exception) {
+                toast(L("Sozlamani ochib bo'lmadi", "Не удалось открыть настройки", "Couldn't open the setting"))
+            }
+        })
+        al.addView(button(L("2) Boshqa ilovalar ustidan ko'rsatish", "2) Показ поверх других приложений", "2) Display over other apps"), 0xFFF59E0B.toInt()) {
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            } catch (e: Exception) {
+                toast(L("Sozlamani ochib bo'lmadi", "Не удалось открыть настройки", "Couldn't open the setting"))
+            }
+        })
+        al.addView(button(L("3) Ilovalarni tanlash", "3) Выбрать приложения", "3) Choose apps"), 0xFF16A34A.toInt()) { showAppLockPicker() })
+        al.addView(
+            tv(
+                L(
+                    "Xiaomi/Redmi: Ilova sozlamalari → Boshqa ruxsatlar → «Fonda oyna ko'rsatish» (Display pop-up windows while running in the background) ni ham yoqing, aks holda qulf oynasi chiqmasligi mumkin. Telefonda ekran qulfi (PIN yoki barmoq izi) o'rnatilgan bo'lishi shart.",
+                    "Xiaomi/Redmi: Настройки приложения → Другие разрешения → включите также «Всплывающие окна в фоне» (Display pop-up windows while running in the background), иначе окно блокировки может не появиться. На телефоне должна быть установлена блокировка экрана (PIN или отпечаток).",
+                    "Xiaomi/Redmi: App settings → Other permissions → also enable «Display pop-up windows while running in the background», otherwise the lock window may not appear. The phone must have a screen lock (PIN or fingerprint)."
+                ),
+                11f, false, pal.sub
+            ).apply { layoutParams = lp(8) }
+        )
+        p3.addView(al)
+
         // =================== Umumiy: natijalar, hodisalar ===================
         status = tv("", 14f, true)
         status.layoutParams = lp(16)
@@ -1679,6 +1740,87 @@ class MainActivity : Activity() {
                 rightMargin = dp(4)
             }
         }
+
+    // ---------- Ilovalarni qulflash ----------
+
+    private fun refreshAppLockUi() {
+        if (!::alInfo.isInitialized) return
+        val u = AppLock.hasUsage(this)
+        val o = AppLock.hasOverlay(this)
+        val n = AppLock.pkgs(this).size
+        val ok = L("✅", "✅", "✅")
+        val no = "⚠️"
+        alInfo.text = L(
+            (if (u) ok else no) + " Foydalanish statistikasi   " + (if (o) ok else no) + " Ustidan ko'rsatish\nQulflangan ilovalar: $n",
+            (if (u) ok else no) + " Статистика использования   " + (if (o) ok else no) + " Поверх других\nЗаблокировано приложений: $n",
+            (if (u) ok else no) + " Usage access   " + (if (o) ok else no) + " Display over apps\nLocked apps: $n"
+        )
+        alInfo.setTextColor(if (u && o) pal.good else pal.warn)
+        updating = true
+        alSwitch.isChecked = AppLock.enabled(this) && u && o
+        updating = false
+    }
+
+    private fun showAppLockPicker() {
+        results.removeAllViews()
+        status.text = L("Ilovalar ro'yxati olinmoqda…", "Загружается список приложений…", "Loading the app list…")
+        status.setTextColor(pal.ink)
+        scrollToResults()
+        Thread {
+            val pm = packageManager
+            val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            val apps = try {
+                pm.queryIntentActivities(launcher, 0)
+                    .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+                    .filter { it.first != packageName }
+                    .distinctBy { it.first }
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                status.text = ""
+                if (apps == null) {
+                    status.text = L("Ro'yxatni olib bo'lmadi.", "Не удалось получить список.", "Couldn't load the list.")
+                    return@runOnUiThread
+                }
+                val locked = AppLock.pkgs(this)
+                val sorted = apps.sortedWith(compareBy({ if (it.first in locked) 0 else 1 }, { it.second.lowercase() }))
+                val head = card(0)
+                head.addView(
+                    cardHeader(
+                        "🔐", L("Qaysi ilovalar qulflansin?", "Какие приложения блокировать?", "Which apps to lock?"),
+                        L("Yoqilgan ilovalar ochilganda ekran qulfi so'raladi.", "Включённые приложения запрашивают блокировку экрана при открытии.", "Enabled apps ask for the screen lock when opened."),
+                        0xFFEA580C.toInt()
+                    )
+                )
+                results.addView(head)
+                for ((pkg, label) in sorted) {
+                    val row = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(dp(14), dp(8), dp(14), dp(8))
+                        background = shape(pal.card, 14, pal.line)
+                        layoutParams = lp(8)
+                    }
+                    val col = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+                    }
+                    col.addView(tv(label, 14f, true))
+                    col.addView(tv(pkg, 10f, false, pal.sub))
+                    val sw = Switch(this)
+                    sw.isChecked = pkg in locked
+                    sw.setOnCheckedChangeListener { _, on ->
+                        AppLock.setLocked(this, pkg, on)
+                        refreshAppLockUi()
+                    }
+                    row.addView(col)
+                    row.addView(sw)
+                    results.addView(row)
+                }
+            }
+        }.start()
+    }
 
     // ---------- Bosh ekran: hisoblagichlar, Wi-Fi, ignor ro'yxati, tanishtiruv ----------
 
@@ -2179,6 +2321,8 @@ class MainActivity : Activity() {
             setTextColor(pal.ink)
             gravity = Gravity.CENTER
             setPadding(dp(6), dp(10), dp(6), dp(10))
+            maxLines = 1
+            setAutoSizeTextTypeUniformWithConfiguration(9, 13, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
             background = ripple(shape(pal.field, 10, pal.line))
             isClickable = true
             setOnClickListener { onClick() }
