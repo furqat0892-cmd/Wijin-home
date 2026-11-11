@@ -48,13 +48,14 @@ class MainActivity : Activity() {
 
     /** Rang palitrasi: telefon sozlamasiga qarab qorong'i yoki yorug'. */
     private class Pal(val dark: Boolean) {
-        val bg = if (dark) 0xFF0E1621.toInt() else 0xFFF1F5F9.toInt()
-        val card = if (dark) 0xFF182433.toInt() else 0xFFFFFFFF.toInt()
+        val bg = if (dark) 0xFF0A1020.toInt() else 0xFFF3F5FA.toInt()
+        val card = if (dark) 0xFF141C2F.toInt() else 0xFFFFFFFF.toInt()
         val ink = if (dark) 0xFFF1F5F9.toInt() else 0xFF0F172A.toInt()
-        val sub = if (dark) 0xFF94A3B8.toInt() else 0xFF64748B.toInt()
-        val field = if (dark) 0xFF0E1621.toInt() else 0xFFF1F5F9.toInt()
-        val line = if (dark) 0xFF263548.toInt() else 0xFFE2E8F0.toInt()
-        val accent = 0xFF2563EB.toInt()
+        val sub = if (dark) 0xFF8FA0BC.toInt() else 0xFF5B6B85.toInt()
+        val field = if (dark) 0xFF0F1626.toInt() else 0xFFF1F4FA.toInt()
+        val line = if (dark) 0xFF223049.toInt() else 0xFFE3E8F2.toInt()
+        val accent = 0xFF3B82F6.toInt()
+        val accent2 = 0xFF8B5CF6.toInt()
         val good = 0xFF16A34A.toInt()
         val warn = 0xFFF59E0B.toInt()
         val bad = 0xFFDC2626.toInt()
@@ -162,6 +163,7 @@ class MainActivity : Activity() {
     private lateinit var summaryBox: LinearLayout
     private lateinit var homeBox: LinearLayout
     private var mainView: View? = null
+    private lateinit var headPill: TextView
     private var scanRing: ScoreRing? = null
     private var scanSub: TextView? = null
     private var scanBar: ProgressBar? = null
@@ -347,8 +349,8 @@ class MainActivity : Activity() {
                 text = icon
                 textSize = 18f
                 gravity = Gravity.CENTER
-                background = shape(mix(pal.card, color, 0.22f), 12)
-                layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+                background = gradBg(mix(pal.card, color, 0.34f), mix(pal.card, color, 0.14f), 14, mix(pal.line, color, 0.45f))
+                layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
             }
             val texts = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.VERTICAL
@@ -375,10 +377,24 @@ class MainActivity : Activity() {
             setPadding(0, dp(2), 0, dp(2))
         }
 
+    /** Bosilganda yengil kichrayish animatsiyasi. */
+    private fun pressable(v: View) {
+        v.setOnTouchListener { view, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN ->
+                    view.animate().scaleX(0.97f).scaleY(0.97f).setDuration(90).start()
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+            }
+            false
+        }
+    }
+
     private fun card(top: Int = 12): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(16), dp(14), dp(16), dp(14))
-        background = shape(pal.card, 18, pal.line)
+        setPadding(dp(18), dp(16), dp(18), dp(16))
+        background = shape(pal.card, 22, pal.line)
+        elevation = dp(if (pal.dark) 0 else 3).toFloat()
         layoutParams = lp(top)
     }
 
@@ -389,10 +405,14 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(textColor)
             gravity = Gravity.CENTER
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = ripple(shape(fill, 14))
+            setPadding(dp(16), dp(13), dp(16), dp(13))
+            background = ripple(
+                GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(fill, mix(fill, Color.WHITE, 0.2f)))
+                    .apply { cornerRadius = dp(16).toFloat() }
+            )
             isClickable = true
             setOnClickListener { onClick() }
+            pressable(this)
             layoutParams = lp(10)
         }
 
@@ -402,24 +422,27 @@ class MainActivity : Activity() {
         setTextColor(pal.ink)
         textSize = 15f
         setSingleLine(true)
-        setPadding(dp(12), dp(10), dp(12), dp(10))
-        background = shape(pal.field, 12, pal.line)
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        background = shape(pal.field, 14, pal.line)
         layoutParams = lp(10)
     }
 
     private fun tile(icon: String, title: String, sub: String, color: Int, onClick: () -> Unit): LinearLayout =
         LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-            background = ripple(gradBg(mix(pal.card, color, 0.26f), pal.card, 18, mix(pal.line, color, 0.55f)))
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            background = ripple(gradBg(mix(pal.card, color, 0.24f), pal.card, 22, mix(pal.line, color, 0.5f)))
+            elevation = dp(if (pal.dark) 0 else 3).toFloat()
             isClickable = true
             setOnClickListener { onClick() }
+            pressable(this)
             val badge = TextView(this@MainActivity).apply {
                 text = icon
                 textSize = 22f
                 gravity = Gravity.CENTER
-                background = shape(color, 14)
-                layoutParams = LinearLayout.LayoutParams(dp(46), dp(46)).apply { bottomMargin = dp(8) }
+                background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(color, mix(color, pal.accent2, 0.45f)))
+                    .apply { cornerRadius = dp(16).toFloat() }
+                layoutParams = LinearLayout.LayoutParams(dp(50), dp(50)).apply { bottomMargin = dp(10) }
             }
             addView(badge)
             addView(tv(title, 15f, true))
@@ -1188,8 +1211,9 @@ class MainActivity : Activity() {
             val ic = b.getChildAt(0) as TextView
             val lb = b.getChildAt(1) as TextView
             ic.alpha = if (on) 1f else 0.55f
+            ic.animate().scaleX(if (on) 1.15f else 1f).scaleY(if (on) 1.15f else 1f).setDuration(160).start()
             lb.setTextColor(if (on) pal.accent else pal.sub)
-            b.background = if (on) shape(mix(pal.card, pal.accent, 0.16f), 14) else null
+            b.background = if (on) shape(mix(pal.card, pal.accent, 0.2f), 20) else null
         }
         evWrap?.visibility = if (i == 0) View.VISIBLE else View.GONE
         if (clear) {
@@ -1229,8 +1253,9 @@ class MainActivity : Activity() {
 
     private fun buildUi() {
         val root = ScrollView(this).apply {
-            setBackgroundColor(pal.bg)
+            setBackgroundColor(Color.TRANSPARENT)
             isFillViewport = true
+            isVerticalScrollBarEnabled = false
         }
         scrollRoot = root
         val col = LinearLayout(this).apply {
@@ -1256,12 +1281,15 @@ class MainActivity : Activity() {
         }
         val titles = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = dp(14) }
-            addView(tv("Qo'riqchi Pro", 24f, true))
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { leftMargin = dp(14) }
+            addView(tv("Qo'riqchi Pro", 25f, true))
             addView(tv(L("Telefoningiz xavfsizlik qo'riqchisi", "Страж безопасности вашего телефона", "Your phone's security guardian"), 13f, false, pal.sub))
         }
+        headPill = tv("", 11f, true, Color.WHITE)
+        headPill.setPadding(dp(10), dp(5), dp(10), dp(5))
         head.addView(logo)
         head.addView(titles)
+        head.addView(headPill)
         col.addView(head)
 
         val p0 = panel()
@@ -1654,8 +1682,9 @@ class MainActivity : Activity() {
         // Pastki menyu
         val nav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = shape(pal.card, 0, pal.line)
-            setPadding(dp(6), dp(6), dp(6), dp(10))
+            background = shape(pal.card, 26, pal.line)
+            elevation = dp(10).toFloat()
+            setPadding(dp(6), dp(6), dp(6), dp(6))
         }
         val tabs = listOf("🛡️" to L("Himoya", "Защита", "Protection"), "🔎" to L("Tekshirish", "Проверка", "Check"), "📱" to L("Telefon", "Телефон", "Phone"), "⚙️" to L("Sozlamalar", "Настройки", "Settings"))
         val btns = ArrayList<LinearLayout>()
@@ -1667,6 +1696,7 @@ class MainActivity : Activity() {
             b.layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
             b.isClickable = true
             b.setOnClickListener { selectTab(i) }
+            pressable(b)
             b.addView(tv(t.first, 20f, false).apply { gravity = Gravity.CENTER })
             b.addView(tv(t.second, 11f, true, pal.sub).apply { gravity = Gravity.CENTER })
             nav.addView(b)
@@ -1676,11 +1706,18 @@ class MainActivity : Activity() {
 
         val outer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(pal.bg)
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(pal.bg, mix(pal.bg, pal.accent, if (pal.dark) 0.07f else 0.04f))
+            )
         }
         root.layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f)
+        val navWrap = LinearLayout(this).apply {
+            setPadding(dp(14), dp(2), dp(14), dp(10))
+        }
+        navWrap.addView(nav, LinearLayout.LayoutParams(MATCH, WRAP))
         outer.addView(root)
-        outer.addView(nav)
+        outer.addView(navWrap)
 
         refreshShieldUi()
         refreshCallUi()
@@ -1731,7 +1768,12 @@ class MainActivity : Activity() {
             intArrayOf(0xFF475569.toInt(), 0xFF64748B.toInt())
         }
         guardCard.background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, colors)
-            .apply { cornerRadius = dp(20).toFloat() }
+            .apply { cornerRadius = dp(24).toFloat() }
+        guardCard.elevation = dp(4).toFloat()
+        if (::headPill.isInitialized) {
+            headPill.text = if (on) "●  " + L("Himoya yoqilgan", "Защита включена", "Protection on") else "●  " + L("Himoya o'chiq", "Защита выключена", "Protection off")
+            headPill.background = shape(if (on) pal.good else 0xFF64748B.toInt(), 14)
+        }
         guardTitle.text = if (on) L("Himoya yoqilgan", "Защита включена", "Protection on") else L("Himoya o'chiq", "Защита выключена", "Protection off")
         guardSub.text = if (on) {
             L("Yangi ilova va yuklangan APK fayllar avtomatik tekshiriladi.", "Новые приложения и загруженные APK проверяются автоматически.", "New apps and downloaded APKs are scanned automatically.")
@@ -2307,16 +2349,16 @@ class MainActivity : Activity() {
         scanBar = null
         summaryBox.removeAllViews()
         val last = prefs.getLong("lastScan", 0L)
-        val c = card(14)
+        val c = card(18)
         if (last == 0L) {
-            c.background = gradBg(mix(pal.card, pal.accent, 0.2f), pal.card, 22, mix(pal.line, pal.accent, 0.5f))
+            c.background = gradBg(mix(pal.card, pal.accent, 0.24f), mix(pal.card, pal.accent2, 0.10f), 28, mix(pal.line, pal.accent, 0.5f))
             val ring = ScoreRing(this, pal.accent, pal.line, pal.ink)
             ring.customLabel = "🛡️"
-            ring.layoutParams = LinearLayout.LayoutParams(dp(130), dp(130)).apply {
+            ring.layoutParams = LinearLayout.LayoutParams(dp(150), dp(150)).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
             }
             c.addView(ring)
-            c.addView(tv("Telefoningiz hali tekshirilmagan", 17f, true).apply { gravity = Gravity.CENTER })
+            c.addView(tv("Telefoningiz hali tekshirilmagan", 20f, true).apply { gravity = Gravity.CENTER })
             c.addView(tv("Bir bosishda barcha o'rnatilgan ilovalarni tekshiring.", 12f, false, pal.sub).apply { gravity = Gravity.CENTER })
             c.addView(button("Hozir tekshirish", pal.accent) { scanInstalled() })
         } else {
@@ -2337,15 +2379,15 @@ class MainActivity : Activity() {
                 susp > 0 -> "Ba'zi ilovalar e'tibor talab qiladi"
                 else -> "Xavfli belgilar topilmadi"
             }
-            c.background = gradBg(mix(pal.card, tone, 0.28f), pal.card, 22, mix(pal.line, tone, 0.6f))
+            c.background = gradBg(mix(pal.card, tone, 0.30f), pal.card, 28, mix(pal.line, tone, 0.6f))
 
             val ring = ScoreRing(this, tone, pal.line, pal.ink)
-            ring.layoutParams = LinearLayout.LayoutParams(dp(150), dp(150)).apply {
+            ring.layoutParams = LinearLayout.LayoutParams(dp(176), dp(176)).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
             }
             c.addView(ring)
             ring.fillTo(ratio)
-            c.addView(tv(title, 17f, true, tone).apply { gravity = Gravity.CENTER })
+            c.addView(tv(title, 20f, true, tone).apply { gravity = Gravity.CENTER })
             val fmt = SimpleDateFormat("dd.MM  HH:mm", Locale.getDefault())
             c.addView(
                 tv("$safe / $total ta ilovada xavf belgisi yo'q  •  ${fmt.format(Date(last))}", 12f, false, pal.sub)
@@ -2486,9 +2528,10 @@ class MainActivity : Activity() {
             setPadding(dp(6), dp(10), dp(6), dp(10))
             maxLines = 1
             setAutoSizeTextTypeUniformWithConfiguration(9, 13, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
-            background = ripple(shape(pal.field, 10, pal.line))
+            background = ripple(shape(pal.field, 12, pal.line))
             isClickable = true
             setOnClickListener { onClick() }
+            pressable(this)
             layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply {
                 leftMargin = dp(3)
                 rightMargin = dp(3)
